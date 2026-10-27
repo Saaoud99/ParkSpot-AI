@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,12 +42,14 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": s.APP_VERSION, "env": s.ENV, "vision_mode": s.VISION_MODE, "db": db_ok}
 
     app.include_router(v1_router)
-    # Static frontend mounted last so API routes win.
-    frontend_dir = os.path.join(os.getcwd(), "frontend")
-    if os.path.isdir(frontend_dir):
+    # Static frontend mounted last so API routes win. Anchored to the repo
+    # root (not the process cwd) so the UI loads no matter where uvicorn
+    # is launched from.
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    if frontend_dir.is_dir():
         from fastapi.staticfiles import StaticFiles
 
-        app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+        app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
     return app
 
 

@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.core.security import hash_password
 from app.db.base import Base
+import app.db.models  # noqa: F401  (register every table for create_all)
 from app.db.models.camera import Camera
 from app.db.models.enums import CameraMode, SpotType, UserRole, VehicleSize
 from app.db.models.pricing import CityEvent

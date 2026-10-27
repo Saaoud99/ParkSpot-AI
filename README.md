@@ -4,13 +4,23 @@ Airbnb for parking: private hosts list driveways/garages/lots, drivers pre-book 
 
 ## Quick start
 
+Easiest — one command from the repo root (creates the venv if missing, migrates, seeds, serves):
+
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
-cp .env.example .env   # set SECRET_KEY (32+ chars); LLAMA_API_KEY / MAPBOX_ACCESS_TOKEN optional
-alembic upgrade head
-python -m scripts.seed
-uvicorn app.main:app --reload
+bash run.sh        # then open http://localhost:8000
 ```
+
+Manual equivalent, using the bundled `.venv` (Python 3.12):
+
+```bash
+cd /home/asaaoud/Desktop/ParkSpot-AI
+cp .env.example .env   # set SECRET_KEY (32+ chars); LLAMA_API_KEY / MAPBOX_ACCESS_TOKEN optional
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python -m scripts.seed
+.venv/bin/python -m uvicorn app.main:app --port 8000
+```
+
+Fresh setup without the bundled venv: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt`, then the commands above.
 
 Open http://localhost:8000 — demo logins: `driver@demo.test` / `host@demo.test` / `admin@demo.test`, password `demo1234`. Driver plate: `DEMO1234`. Cameras: `cam-001`…`cam-006`.
 
@@ -19,8 +29,8 @@ Without `LLAMA_API_KEY`, chat returns a degraded friendly reply and pricing uses
 ## Real vision mode
 
 ```bash
-pip install -r requirements-vision.txt
-VISION_MODE=real uvicorn app.main:app
+.venv/bin/python -m pip install -r requirements-vision.txt
+VISION_MODE=real .venv/bin/python -m uvicorn app.main:app --port 8000
 ```
 
 Simulate mode (default) needs no ML dependencies; SAM 2/EasyOCR/torch/cv2 are imported lazily only in real adapters.
@@ -34,9 +44,9 @@ Alternative Llama providers are env-only: set `LLAMA_BASE_URL`/`LLAMA_MODEL` for
 ## Tests & demo
 
 ```bash
-pytest -q
+.venv/bin/python -m pytest -q
 bash scripts/demo_flow.sh   # with server running after seed
-python -m scripts.simulate_camera --camera cam-001 --arrive DEMO1234
+.venv/bin/python -m scripts.simulate_camera --camera cam-001 --arrive DEMO1234
 ```
 
 Architecture: FastAPI + SQLAlchemy 2.0 async (SQLite/WAL, Alembic) → services own authorization & commits, repositories never commit → Llama 3 tool-calling agent (user injected via `ToolContext`, never from the model) → APScheduler workers expire holds, mark no-shows, auto-complete, and refresh per-zone pricing snapshots.

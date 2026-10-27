@@ -12,12 +12,23 @@ from app.core.exceptions import AuthError
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+def _bcrypt_input(password: str) -> str:
+    # bcrypt only uses the first 72 *bytes*; long/unicode passwords would
+    # raise or silently collide. Pre-hash those with SHA-256 so hashing and
+    # verification always agree and never crash.
+    if len(password.encode("utf-8")) > 72:
+        import hashlib
+
+        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return password
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_bcrypt_input(password))
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return pwd_context.verify(_bcrypt_input(plain), hashed)
 
 
 def _create_token(claims: dict[str, Any], expires: timedelta, token_type: str) -> str:
