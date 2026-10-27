@@ -24,6 +24,12 @@
     <p id="sim" role="status"></p><h4>Recent access events</h4><div id="events"></div></div>
   </section>
 </main>
+<nav class="mobile-nav" aria-label="Mobile navigation">
+  <a href="/index.html"><span aria-hidden="true">🅿️</span>Find</a>
+  <a href="/host.html" aria-current="page"><span aria-hidden="true">🏠</span>Host</a>
+  <a href="/admin.html"><span aria-hidden="true">📊</span>Admin</a>
+  <a href="/login.html"><span aria-hidden="true">👤</span>Account</a>
+</nav>
 <script src="/js/pwa.js"></script>
 <script type="module">import {loadHost,createSpot,simulate,loadEvents} from "/js/host.js";import {publicConfig} from "/js/api.js";import {toast,emptyState} from "/js/ui.js";
 const cfg=await publicConfig();

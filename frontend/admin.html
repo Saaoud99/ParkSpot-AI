@@ -24,6 +24,12 @@
     </section>
   </div>
 </main>
+<nav class="mobile-nav" aria-label="Mobile navigation">
+  <a href="/index.html"><span aria-hidden="true">🅿️</span>Find</a>
+  <a href="/host.html"><span aria-hidden="true">🏠</span>Host</a>
+  <a href="/admin.html" aria-current="page"><span aria-hidden="true">📊</span>Admin</a>
+  <a href="/login.html"><span aria-hidden="true">👤</span>Account</a>
+</nav>
 <script src="/js/pwa.js"></script>
 <script type="module">import {loadAdmin,createEvent,recompute,loadPricingSnapshots} from "/js/admin.js";import {publicConfig} from "/js/api.js";import {toast} from "/js/ui.js";
 const cfg=await publicConfig();

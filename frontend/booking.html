@@ -8,6 +8,12 @@
 <main style="max-width:680px;margin:0 auto;padding:24px 16px 90px">
   <div id="root" class="card reveal" aria-live="polite"><p style="color:var(--ink-2)">Loading your booking…</p></div>
 </main>
+<nav class="mobile-nav" aria-label="Mobile navigation">
+  <a href="/index.html"><span aria-hidden="true">🅿️</span>Find</a>
+  <a href="/host.html"><span aria-hidden="true">🏠</span>Host</a>
+  <a href="/admin.html"><span aria-hidden="true">📊</span>Admin</a>
+  <a href="/login.html"><span aria-hidden="true">👤</span>Account</a>
+</nav>
 <script src="/js/pwa.js"></script>
 <script type="module">import {loadBooking,confirmBooking,cancelBooking} from "/js/booking.js";import {token} from "/js/api.js";import {toast} from "/js/ui.js";
 const params=new URLSearchParams(location.search);const holdId=params.get("hold");const bookingId=params.get("id")||holdId;
