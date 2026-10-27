@@ -46,8 +46,20 @@ async def client():
 
 
 async def make_user(client, email, role="driver", name="Test User"):
-    r = await client.post("/api/v1/auth/register", json={"email": email, "password": "password123", "full_name": name, "role": role})
+    # Public registration is drivers-only; partner/admin test users are
+    # provisioned directly in the DB (like ParkSpot operations would),
+    # then logged in so the token carries the elevated role.
+    r = await client.post("/api/v1/auth/register", json={"email": email, "password": "password123", "full_name": name, "role": "driver"})
     assert r.status_code == 201, r.text
+    if role != "driver":
+        from sqlalchemy import update
+
+        from app.db.models.enums import UserRole
+        from app.db.models.user import User
+
+        async with TestSession() as session:
+            await session.execute(update(User).where(User.email == email).values(role=UserRole(role)))
+            await session.commit()
     r = await client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
     assert r.status_code == 200, r.text
     return r.json()["access_token"]

@@ -34,6 +34,8 @@ class SpotCreate(BaseModel):
     has_ev_charging: bool = False
     max_vehicle_size: VehicleSize = VehicleSize.standard
     base_price_per_hour: Decimal = Field(ge=0)
+    total_capacity: int = Field(default=1, ge=0, le=100000)
+    authorized_capacity: int = Field(default=1, ge=0, le=100000)
     dynamic_pricing_enabled: bool = True
     max_multiplier: Decimal = Decimal("2.00")
     access_instructions: str | None = None
@@ -50,6 +52,8 @@ class SpotUpdate(BaseModel):
     has_ev_charging: bool | None = None
     max_vehicle_size: VehicleSize | None = None
     base_price_per_hour: Decimal | None = Field(default=None, ge=0)
+    total_capacity: int | None = Field(default=None, ge=0, le=100000)
+    authorized_capacity: int | None = Field(default=None, ge=0, le=100000)
     dynamic_pricing_enabled: bool | None = None
     max_multiplier: Decimal | None = None
     access_instructions: str | None = None
@@ -72,6 +76,8 @@ class SpotOut(BaseModel):
     has_ev_charging: bool
     max_vehicle_size: VehicleSize
     base_price_per_hour: Decimal
+    total_capacity: int = 1
+    authorized_capacity: int = 1
     currency: str
     dynamic_pricing_enabled: bool
     max_multiplier: Decimal
@@ -98,4 +104,5 @@ class SpotSearchResult(SpotOut):
     multiplier: Decimal
     price_per_hour_now: Decimal
     estimated_total: Decimal
+    spaces_available: int = 0
     is_available: bool = True

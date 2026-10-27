@@ -7,8 +7,8 @@
 <body>
 <header class="topbar"><div class="topbar-inner">
   <a class="logo" href="/index.html">ParkSpot <em>AI</em></a>
-  <nav aria-label="Primary" style="display:flex;gap:4px"><a class="navlink" aria-current="page" href="/index.html">Find parking</a><a class="navlink" href="/host.html">Host</a><a class="navlink" href="/admin.html">Admin</a></nav>
-  <span style="margin-left:auto"><button class="chip" onclick="localStorage.clear();location.href='/login.html'">Logout</button></span>
+  <nav aria-label="Primary" style="display:flex;gap:4px"><a class="navlink" aria-current="page" href="/index.html">Find parking</a><a class="navlink" href="/bookings.html">My bookings</a><a class="navlink ops-link" href="/host.html" style="display:none">Partner ops</a><a class="navlink admin-link" href="/admin.html" style="display:none">Admin</a></nav>
+  <span style="margin-left:auto"><button class="chip" id="logout">Logout</button></span>
 </div></header>
 
 <main style="max-width:1240px;margin:0 auto;padding:20px 16px 120px">
@@ -43,9 +43,9 @@
 
 <nav class="mobile-nav" aria-label="Mobile navigation">
   <a href="/index.html" aria-current="page"><span aria-hidden="true">🅿️</span>Find</a>
-  <a href="/host.html"><span aria-hidden="true">🏠</span>Host</a>
-  <a href="/admin.html"><span aria-hidden="true">📊</span>Admin</a>
-  <a href="/login.html"><span aria-hidden="true">👤</span>Account</a>
+  <a href="/bookings.html"><span aria-hidden="true">🎫</span>Bookings</a>
+  <a href="/host.html"><span aria-hidden="true">🏢</span>Partner</a>
+  <a href="/bookings.html#profile"><span aria-hidden="true">👤</span>Account</a>
 </nav>
 <button id="chat-fab" class="btn" aria-label="Open AI parking assistant">💬 Ask AI</button>
 <div id="chat-scrim"></div>
@@ -70,18 +70,29 @@
   </div>
 </aside>
 <script src="/js/pwa.js"></script>
-<script type="module">import {initMap,searchAndRender,highlightMarker} from "/js/map.js";import {initChat,initDrawer,initVoice} from "/js/chat.js";import {spotCard,skeletons,emptyState,toast,markSelected} from "/js/ui.js";import {createHold} from "/js/booking.js";import {publicConfig,api} from "/js/api.js";
+<script type="module">import {initMap,searchAndRender,highlightMarker} from "/js/map.js";import {initChat,initDrawer,initVoice} from "/js/chat.js";import {spotCard,skeletons,emptyState,toast,markSelected} from "/js/ui.js";import {createHold} from "/js/booking.js";import {publicConfig,api,token} from "/js/api.js";import {logout} from "/js/auth.js";
+document.getElementById("logout").onclick=logout;
+// Show operations links only to roles that can actually use them (backend still enforces).
+if(token()){try{const r=await fetch("/api/v1/auth/me",{headers:{Authorization:`Bearer ${token()}`}});if(r.ok){const me=await r.json();
+ if(me.role==="host"||me.role==="admin")document.querySelectorAll(".ops-link").forEach(a=>a.style.display="");
+ if(me.role==="admin")document.querySelectorAll(".admin-link").forEach(a=>a.style.display="");}}catch{}}
 const cfg=await publicConfig();let center={lat:cfg.demo_center.lat,lng:cfg.demo_center.lng};window._demoLocation=center;
 const iso=d=>new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,16);
 start.value=iso(new Date(Date.now()+3600e3));end.value=iso(new Date(Date.now()+3*3600e3));
 await initMap("map");
 const results=document.getElementById("results"),count=document.getElementById("count"),grid=document.getElementById("discover-grid");
 function times(){return {s:new Date(start.value).toISOString(),e:new Date(end.value).toISOString()};}
-async function reserve(spot){if(!localStorage.getItem("access_token")){location.href="/login.html";return;}
-  const {s,e}=times();toast("Holding your spot while you review…");
-  try{const held=await createHold(spot.id,s,e);location.href=`/booking.html?hold=${held.id}`;}catch(err){toast(err.message,false);doSearch();}}
-async function doSearch(ev){ev&&ev.preventDefault();skeletons(results,3);count.textContent="";
-  const {s,e}=times();const params={radius_km:5,start:s,end:e};
+function validTimes(){const {s,e}=times();if(!start.value||!end.value||new Date(e)<=new Date(s)){toast("Leaving time must be after arriving time.",false);emptyState(results,"🕒","Check your times","Please choose a leaving time after your arrival time.");return null;}return {s,e};}
+async function reserve(spot){const t=validTimes();if(!t)return;
+  if(!localStorage.getItem("access_token")){
+    // Preserve the selected facility + times across login/registration.
+    sessionStorage.setItem("parkspot_pending",JSON.stringify({spotId:spot.id,s:t.s,e:t.e,title:spot.title}));
+    toast("Log in to finish reserving "+spot.title);
+    location.href="/login.html?next="+encodeURIComponent("/index.html?resume=1");return;}
+  toast("Holding your space while you review…");
+  try{const held=await createHold(spot.id,t.s,t.e);location.href=`/booking.html?hold=${held.id}`;}catch(err){toast(err.message,false);doSearch();}}
+async function doSearch(ev){ev&&ev.preventDefault();const t=validTimes();if(!t)return;skeletons(results,3);count.textContent="";
+  const {s,e}=t;const params={radius_km:5,start:s,end:e};
   if(document.getElementById("f-covered").getAttribute("aria-pressed")==="true")params.covered=true;
   if(document.getElementById("f-ev").getAttribute("aria-pressed")==="true")params.ev=true;
   if(document.getElementById("f-cheap").getAttribute("aria-pressed")==="true")params.max_price_per_hour=10;
@@ -106,5 +117,11 @@ vlist.onclick=()=>{grid.classList.add("show-list");grid.classList.remove("show-m
 initDrawer("chat-fab","chat-close","chat-drawer","chat-scrim");
 initVoice("mic","chatin","voice-status");
 initChat("chatlog","chatin","chatsend",reserve);
-doSearch();
+// Resume a reservation that was interrupted by login/registration.
+(async()=>{const raw=sessionStorage.getItem("parkspot_pending");
+ if(raw&&localStorage.getItem("access_token")){sessionStorage.removeItem("parkspot_pending");
+  try{const p=JSON.parse(raw);toast(`Continuing your reservation at ${p.title}…`);
+   const held=await createHold(p.spotId,p.s,p.e);location.href=`/booking.html?hold=${held.id}`;return;}
+  catch(err){toast(`Couldn't resume that hold: ${err.message}`,false);}}
+ doSearch();})();
 </script></body></html>

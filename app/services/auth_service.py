@@ -23,8 +23,14 @@ def _token_pair(user: User) -> TokenPair:
 
 
 async def register(db: AsyncSession, data: RegisterIn) -> User:
-    if data.role == UserRole.admin:
-        raise ValidationAppError("admin role cannot be registered", code="admin_not_allowed")
+    # Public self-registration is for drivers only. Partner-operator and
+    # admin accounts are provisioned by ParkSpot operations (seed/admin
+    # tooling), never through the public consumer sign-up.
+    if data.role != UserRole.driver:
+        raise ValidationAppError(
+            "public registration is for drivers; partner and admin accounts are provisioned by ParkSpot operations",
+            code="role_not_allowed",
+        )
     if "@" not in data.email:
         raise ValidationAppError("invalid email")
     if await user_repo.get_by_email(db, data.email):

@@ -43,7 +43,16 @@ async def overlapping_booking(db: AsyncSession, spot_id: int, start: datetime, e
     stmt = select(Booking).where(
         Booking.spot_id == spot_id, Booking.status.in_(ACTIVE_STATUSES),
         Booking.start_time < end, Booking.end_time > start)
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def overlapping_count(db: AsyncSession, spot_id: int, start: datetime, end: datetime) -> int:
+    """Reservations (held/confirmed/active) overlapping the interval — the
+    number of ParkSpot-authorized spaces already taken for that window."""
+    stmt = select(func.count(Booking.id)).where(
+        Booking.spot_id == spot_id, Booking.status.in_(ACTIVE_STATUSES),
+        Booking.start_time < end, Booking.end_time > start)
+    return (await db.execute(stmt)).scalar_one()
 
 
 async def has_active_booking(db: AsyncSession, spot_id: int) -> bool:

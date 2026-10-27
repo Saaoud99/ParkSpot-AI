@@ -4,17 +4,20 @@
 <script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
 <body style="display:grid;place-items:center;padding:24px 16px;min-height:100dvh">
 <main class="card reveal" style="max-width:420px;width:100%;padding:32px">
+  <a href="/index.html" class="btn btn-ghost" style="min-height:40px;padding:8px 14px;margin-bottom:18px">← Back to home</a><br>
   <a class="logo" href="/index.html" style="font-size:1.5rem">ParkSpot <em>AI</em></a>
-  <h1 style="font-size:1.35rem;margin:16px 0 4px">Create your account</h1><p style="color:var(--ink-2);margin-top:0">Book guaranteed parking — or earn from your driveway.</p>
+  <h1 style="font-size:1.35rem;margin:16px 0 4px">Create your driver account</h1><p style="color:var(--ink-2);margin-top:0">Search, reserve and manage parking at participating facilities.</p>
   <form id="f"><label for="name">Full name</label><input id="name" required autocomplete="name" placeholder="Alex Rivera" style="margin:6px 0 12px">
   <label for="email">Email</label><input id="email" type="email" required autocomplete="email" placeholder="you@example.com" style="margin:6px 0 12px">
   <label for="password">Password</label><input id="password" type="password" required minlength="8" maxlength="72" autocomplete="new-password" placeholder="8+ characters" style="margin:6px 0 12px">
-  <label for="role">I am a</label><select id="role" style="margin:6px 0 16px"><option value="driver">Driver — I need parking</option><option value="host">Host — I rent out my spot</option></select>
   <button id="go" class="btn" style="width:100%">Create account</button><p id="msg" role="alert"></p></form>
-  <p>Already registered? <a href="/login.html">Log in</a></p>
+  <p>Already registered? <a id="loginlink" href="/login.html">Log in</a></p>
+  <p style="color:var(--ink-2);font-size:.85rem;background:var(--surface-2);border:1px solid var(--border);padding:12px;border-radius:10px">Parking facility or partner operator? Partner and admin accounts are provisioned by ParkSpot operations — there is no public partner sign-up.</p>
 </main>
 <script src="/js/pwa.js"></script>
 <script type="module">import {api} from "/js/api.js";import {toast} from "/js/ui.js";
-document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const go=document.getElementById("go");go.disabled=true;
-try{await api("/auth/register",{method:"POST",body:{email:email.value,password:password.value,full_name:name.value,role:role.value}});toast("Account created — please log in");setTimeout(()=>location.href="/login.html",700);}
-catch(err){const m=document.getElementById("msg");m.textContent=err.message;m.style.color="var(--error)";go.disabled=false;}});</script></body></html>
+const params=new URLSearchParams(location.search);
+if(params.get("next"))document.getElementById("loginlink").href=`/login.html?next=${encodeURIComponent(params.get("next"))}`;
+document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const go=document.getElementById("go");go.disabled=true;go.textContent="Creating account…";
+try{await api("/auth/register",{method:"POST",body:{email:document.getElementById("email").value,password:document.getElementById("password").value,full_name:document.getElementById("name").value,role:"driver"}});toast("Account created — please log in");setTimeout(()=>location.href=document.getElementById("loginlink").href,700);}
+catch(err){const m=document.getElementById("msg");m.textContent=err.message;m.style.color="var(--error)";go.disabled=false;go.textContent="Create account";}});</script></body></html>

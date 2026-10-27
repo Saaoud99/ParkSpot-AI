@@ -34,6 +34,7 @@ export function spotCard(s, onBook, onSelect) {
     </div>
     <p style="color:var(--ink-2);margin:6px 0">${s.address}${s.distance_km != null ? ` · ${s.distance_km} km away` : ""}</p>
     <p style="margin:4px 0;color:var(--ink-2);font-size:.9rem">${amenities}</p>
+    ${s.spaces_available != null ? `<p style="margin:4px 0"><span class="pill pill-go">${s.spaces_available} ParkSpot space${s.spaces_available === 1 ? "" : "s"} left</span> <span style="color:var(--ink-3);font-size:.82rem">of ${s.authorized_capacity ?? s.spaces_available} authorized for ParkSpot bookings</span></p>` : ""}
     <details style="margin:8px 0"><summary style="cursor:pointer;color:var(--brand);font-weight:600">Details & access</summary>
       <p style="color:var(--ink-2);margin:6px 0">${s.access_instructions || "Access instructions are provided after booking."}<br>
       Cancellation: free cancellation before arrival via “Cancel booking” on your booking page (per booking terms shown at checkout).</p></details>

@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
 from app.db.models.enums import BookingStatus, SpotStatus, UserRole
 from app.db.models.spot import AvailabilityWindow, ParkingSpot
 from app.db.models.user import User
@@ -22,13 +22,23 @@ def _check_owner(spot: ParkingSpot, user: User) -> None:
         raise ForbiddenError("forbidden")
 
 
+def _validate_capacity(total_capacity: int, authorized_capacity: int) -> None:
+    if authorized_capacity > total_capacity:
+        raise ValidationAppError(
+            "authorized_capacity cannot exceed total_capacity",
+            code="invalid_capacity",
+        )
+
+
 async def create_spot(db: AsyncSession, user: User, data: SpotCreate) -> ParkingSpot:
+    _validate_capacity(data.total_capacity, data.authorized_capacity)
     s = get_settings()
     spot = ParkingSpot(
         host_id=user.id, title=data.title, description=data.description, address=data.address,
         latitude=data.latitude, longitude=data.longitude, zone_key=zone_key_for(data.latitude, data.longitude),
         spot_type=data.spot_type, is_covered=data.is_covered, has_ev_charging=data.has_ev_charging,
         max_vehicle_size=data.max_vehicle_size, base_price_per_hour=q2(data.base_price_per_hour),
+        total_capacity=data.total_capacity, authorized_capacity=data.authorized_capacity,
         currency=s.CURRENCY, dynamic_pricing_enabled=data.dynamic_pricing_enabled,
         max_multiplier=data.max_multiplier, access_instructions=data.access_instructions,
     )
@@ -44,6 +54,10 @@ async def update_spot(db: AsyncSession, user: User, spot_id: int, data: SpotUpda
         raise NotFoundError("spot not found")
     _check_owner(spot, user)
     updates = data.model_dump(exclude_unset=True)
+    _validate_capacity(
+        updates.get("total_capacity", spot.total_capacity),
+        updates.get("authorized_capacity", spot.authorized_capacity),
+    )
     # Host may only set available/unavailable directly; held/occupied are system-set.
     if "status" in updates and updates["status"] not in (SpotStatus.available, SpotStatus.unavailable) and user.role != UserRole.admin:
         updates.pop("status")
@@ -110,12 +124,19 @@ def is_within_windows(spot: ParkingSpot, start: datetime, end: datetime) -> bool
     return True
 
 
+async def spaces_available(db: AsyncSession, spot: ParkingSpot, start: datetime, end: datetime) -> int:
+    """ParkSpot-authorized spaces still free for the interval: the partner
+    agreement's authorized capacity minus overlapping live reservations."""
+    taken = await spot_repo.overlapping_count(db, spot.id, start, end)
+    return max(0, spot.authorized_capacity - taken)
+
+
 async def is_available(db: AsyncSession, spot: ParkingSpot, start: datetime, end: datetime) -> bool:
     if not spot.is_published or spot.status == SpotStatus.unavailable:
         return False
     if not is_within_windows(spot, start, end):
         return False
-    return await spot_repo.overlapping_booking(db, spot.id, start, end) is None
+    return await spaces_available(db, spot, start, end) > 0
 
 
 async def search(
@@ -146,7 +167,8 @@ async def search(
         if max_price_per_hour is not None and quote["price_per_hour_now"] > max_price_per_hour:
             continue
         results.append({**_spot_dict(spot), "distance_km": round(dist, 3), "multiplier": quote["multiplier"],
-                        "price_per_hour_now": quote["price_per_hour_now"], "estimated_total": quote["total"], "is_available": True})
+                        "price_per_hour_now": quote["price_per_hour_now"], "estimated_total": quote["total"],
+                        "spaces_available": await spaces_available(db, spot, start, end), "is_available": True})
     results.sort(key=lambda r: r["distance_km"])
     return results[:limit]
 
@@ -157,6 +179,7 @@ def _spot_dict(spot: ParkingSpot) -> dict:
         "address": spot.address, "latitude": spot.latitude, "longitude": spot.longitude, "zone_key": spot.zone_key,
         "spot_type": spot.spot_type, "is_covered": spot.is_covered, "has_ev_charging": spot.has_ev_charging,
         "max_vehicle_size": spot.max_vehicle_size, "base_price_per_hour": spot.base_price_per_hour,
+        "total_capacity": spot.total_capacity, "authorized_capacity": spot.authorized_capacity,
         "currency": spot.currency, "dynamic_pricing_enabled": spot.dynamic_pricing_enabled,
         "max_multiplier": spot.max_multiplier, "status": spot.status, "access_instructions": spot.access_instructions,
         "is_published": spot.is_published, "created_at": spot.created_at,

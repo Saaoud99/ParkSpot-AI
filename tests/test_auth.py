@@ -13,6 +13,14 @@ async def test_register_admin_rejected(client):
     assert r.status_code == 422
 
 
+async def test_register_host_rejected_publicly(client):
+    # Partner-operator accounts are provisioned by ParkSpot operations,
+    # not via public self-registration.
+    r = await client.post("/api/v1/auth/register", json={"email": "hp@test.com", "password": "password123", "full_name": "H", "role": "host"})
+    assert r.status_code == 422
+    assert r.json()["code"] == "role_not_allowed"
+
+
 async def test_duplicate_email_409(client):
     await make_user(client, "dup@test.com")
     r = await client.post("/api/v1/auth/register", json={"email": "dup@test.com", "password": "password123", "full_name": "D", "role": "driver"})

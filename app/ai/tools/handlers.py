@@ -113,6 +113,7 @@ async def search_parking_spots(ctx: ToolContext, args: dict[str, Any]) -> dict:
                                         a.covered, a.ev_charging, a.spot_type, Decimal(str(a.max_price_per_hour)) if a.max_price_per_hour else None, min(a.limit, 8))
     spots = [{"id": r["id"], "title": r["title"], "address": r["address"], "spot_type": r["spot_type"].value if hasattr(r["spot_type"], "value") else r["spot_type"],
               "distance_km": r["distance_km"], "price_per_hour_now": str(r["price_per_hour_now"]), "estimated_total": str(r["estimated_total"]),
+              "spaces_available": r.get("spaces_available"), "authorized_capacity": r.get("authorized_capacity"),
               "is_covered": r["is_covered"], "has_ev_charging": r["has_ev_charging"]} for r in results[:8]]
     return {"ok": True, "count": len(spots), "spots": spots}
 

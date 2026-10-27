@@ -1,23 +1,27 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Host studio — ParkSpot AI</title><meta name="theme-color" content="#16845B"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
+<title>Partner operations — ParkSpot AI</title><meta name="theme-color" content="#16845B"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;800&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
 <body>
 <header class="topbar"><div class="topbar-inner"><a class="logo" href="/index.html">ParkSpot <em>AI</em></a>
-<nav aria-label="Primary" style="display:flex;gap:4px"><a class="navlink" href="/index.html">Find parking</a><a class="navlink" aria-current="page" href="/host.html">Host studio</a><a class="navlink" href="/admin.html">Admin</a></nav>
-<span style="margin-left:auto"><button class="chip" onclick="localStorage.clear();location.href='/login.html'">Logout</button></span></div></header>
+<nav aria-label="Primary" style="display:flex;gap:4px"><a class="navlink" href="/index.html">Find parking</a><a class="navlink" href="/bookings.html">My bookings</a><a class="navlink" aria-current="page" href="/host.html">Partner ops</a><a class="navlink" href="/admin.html">Admin</a></nav>
+<span style="margin-left:auto"><button class="chip" id="logout">Logout</button></span></div></header>
 <main style="max-width:1240px;margin:0 auto;padding:20px 16px 70px" class="grid md:grid-cols-2 gap-4">
-  <section class="card reveal"><h2 style="margin-top:0">List a new spot</h2>
-    <form id="cf"><label for="title">Title</label><input id="title" required placeholder="Covered driveway near Mission" style="margin:6px 0 10px">
+  <div id="guard" class="card reveal" style="display:none;grid-column:1/-1"><h2 style="margin-top:0">Partner operations access required</h2><p style="color:var(--ink-2)">This area is for ParkSpot operations staff and authorized parking partners under a ParkSpot agreement. Driver accounts can't manage facilities. If you operate a parking facility, ParkSpot's team provisions partner access — there is no public partner sign-up.</p><a class="btn" href="/index.html">← Back to home</a></div>
+  <section class="card reveal ops-only"><h2 style="margin-top:0">Configure a partner facility</h2>
+    <p style="color:var(--ink-2);font-size:.9rem;margin-top:0">For facilities covered by a ParkSpot partner agreement. Set the facility's total capacity and the capacity authorized for ParkSpot bookings — drivers can never reserve beyond the authorized capacity.</p>
+    <form id="cf"><label for="title">Facility name</label><input id="title" required placeholder="Downtown Covered Garage" style="margin:6px 0 10px">
     <label for="address">Address</label><input id="address" required placeholder="200 Mission St" style="margin:6px 0 10px">
-    <label for="price">Price / hour (USD)</label><input id="price" type="number" value="5" min="0" step="0.5" required style="margin:6px 0 14px">
-    <button id="create" class="btn">Publish spot</button></form>
-    <h3 style="margin-top:26px">My spots</h3><div id="spots" aria-live="polite"></div>
+    <label for="price">Price / hour (USD)</label><input id="price" type="number" value="5" min="0" step="0.5" required style="margin:6px 0 10px">
+    <label for="totalcap">Total facility capacity (spaces)</label><input id="totalcap" type="number" value="50" min="0" step="1" required style="margin:6px 0 10px">
+    <label for="authcap">Capacity authorized for ParkSpot bookings</label><input id="authcap" type="number" value="10" min="0" step="1" required style="margin:6px 0 14px">
+    <button id="create" class="btn">Add facility</button></form>
+    <h3 style="margin-top:26px">Partner facilities</h3><div id="spots" aria-live="polite"></div>
   </section>
-  <section class="card reveal"><h2 style="margin-top:0">Bookings & entry monitoring</h2><div id="bookings" style="margin-bottom:16px" aria-live="polite"></div>
+  <section class="card reveal ops-only"><h2 style="margin-top:0">Bookings & entry monitoring</h2><div id="bookings" style="margin-bottom:16px" aria-live="polite"></div>
     <div style="background:var(--surface-2);border:1px solid var(--border);padding:16px;border-radius:12px">
     <h3 style="margin-top:0">Camera simulator</h3>
-    <p style="color:var(--ink-2);font-size:.9rem">Simulates the SAM 2 + OCR pipeline event for a camera. Real grants happen only server-side after plate↔booking matching — this UI cannot grant access by itself.</p>
+    <p style="color:var(--ink-2);font-size:.9rem">Simulates one pipeline event: vehicle detection/segmentation (SAM 2 in real mode) → plate OCR (EasyOCR) → backend reservation match. SAM 2 alone does not read plates. Real entry grants happen only server-side after plate↔booking matching — this UI cannot grant access by itself. Unreadable or unmatched plates are denied here and would go to manual verification at a real facility.</p>
     <label for="plate">Plate</label><input id="plate" placeholder="DEMO1234" class="mono" style="margin:6px 0 10px">
     <label for="camera">Camera ID</label><input id="camera" value="cam-001" class="mono" style="margin:6px 0 14px">
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button id="arrive" class="btn">Simulate arrival</button><button id="depart" class="btn btn-ghost">Simulate departure</button></div>
@@ -26,12 +30,17 @@
 </main>
 <nav class="mobile-nav" aria-label="Mobile navigation">
   <a href="/index.html"><span aria-hidden="true">🅿️</span>Find</a>
-  <a href="/host.html" aria-current="page"><span aria-hidden="true">🏠</span>Host</a>
-  <a href="/admin.html"><span aria-hidden="true">📊</span>Admin</a>
-  <a href="/login.html"><span aria-hidden="true">👤</span>Account</a>
+  <a href="/bookings.html"><span aria-hidden="true">🎫</span>Bookings</a>
+  <a href="/host.html" aria-current="page"><span aria-hidden="true">🏢</span>Partner</a>
+  <a href="/bookings.html#profile"><span aria-hidden="true">👤</span>Account</a>
 </nav>
 <script src="/js/pwa.js"></script>
-<script type="module">import {loadHost,createSpot,simulate,loadEvents} from "/js/host.js";import {publicConfig} from "/js/api.js";import {toast,emptyState} from "/js/ui.js";
+<script type="module">import {loadHost,createSpot,simulate,loadEvents} from "/js/host.js";import {publicConfig,api,token} from "/js/api.js";import {toast,emptyState} from "/js/ui.js";import {logout} from "/js/auth.js";
+document.getElementById("logout").onclick=logout;
+// Partner-operations guard: drivers/public visitors get an explanation, not a broken page.
+let allowed=false;
+if(token()){try{const r=await fetch("/api/v1/auth/me",{headers:{Authorization:`Bearer ${token()}`}});if(r.ok){const me=await r.json();allowed=(me.role==="host"||me.role==="admin");}}catch{}}
+if(!allowed){document.getElementById("guard").style.display="";document.querySelectorAll(".ops-only").forEach(s=>s.style.display="none");}
 const cfg=await publicConfig();
 const PILL={available:"pill-go",held:"pill-hold",occupied:"pill-stop",unavailable:"pill-stop"};
 const spotsEl=document.getElementById("spots"),bookingsEl=document.getElementById("bookings");
@@ -39,12 +48,13 @@ async function refresh(){const {spots,bookings}=await loadHost();
  spotsEl.innerHTML=spots.map(s=>`<div class="card card-hover" style="padding:14px;margin-bottom:10px;box-shadow:none">
   <div style="display:flex;justify-content:space-between;gap:8px"><b>${s.title}</b><span class="pill ${PILL[s.status]||"pill-go"}">${s.status}</span></div>
   <div style="color:var(--ink-2)">${s.address} · <span class="mono">$${s.base_price_per_hour}/h</span>${s.camera_id?` · Camera <span class="mono">${s.camera_id}</span>`:""}</div>
-  <div style="color:var(--ink-3);font-size:.85rem">Upcoming bookings: ${s.upcoming_bookings_count} · Earned: <span class="mono">$${s.earnings_total}</span></div></div>`).join("")||"No spots yet — publish your first one above.";
+  <div style="color:var(--ink-2);font-size:.88rem">Capacity: ${s.total_capacity} total · <b style="color:var(--ink)">${s.authorized_capacity} authorized for ParkSpot</b></div>
+  <div style="color:var(--ink-3);font-size:.85rem">Upcoming bookings: ${s.upcoming_bookings_count} · Earned: <span class="mono">$${s.earnings_total}</span></div></div>`).join("")||"No facilities configured yet — add one above.";
  bookingsEl.innerHTML=bookings.map(b=>`<div style="border:1px solid var(--border);padding:12px;border-radius:10px;margin-bottom:8px"><span class="mono">#${b.id}</span> <b>${b.spot.title}</b> — ${b.status} · <span class="mono">${b.vehicle_plate}</span> · <span class="mono">$${b.total_price}</span></div>`).join("")||'<p style="color:var(--ink-2)">No bookings yet.</p>';}
 document.getElementById("cf").addEventListener("submit",async e=>{e.preventDefault();const btn=document.getElementById("create");btn.disabled=true;
- try{const s=await createSpot({title:document.getElementById("title").value,address:document.getElementById("address").value,latitude:cfg.demo_center.lat+(Math.random()-.5)*.02,longitude:cfg.demo_center.lng+(Math.random()-.5)*.02,spot_type:"driveway",is_covered:false,has_ev_charging:false,base_price_per_hour:document.getElementById("price").value});toast(`Spot #${s.id} published`);refresh();}
+ try{const s=await createSpot({title:document.getElementById("title").value,address:document.getElementById("address").value,latitude:cfg.demo_center.lat+(Math.random()-.5)*.02,longitude:cfg.demo_center.lng+(Math.random()-.5)*.02,spot_type:"garage",is_covered:false,has_ev_charging:false,base_price_per_hour:document.getElementById("price").value,total_capacity:Number(document.getElementById("totalcap").value),authorized_capacity:Number(document.getElementById("authcap").value)});toast(`Facility #${s.id} added`);refresh();}
  catch(err){toast(err.message,false);}btn.disabled=false;});
 async function showEvents(spotId){try{const ev=await loadEvents(spotId);document.getElementById("events").innerHTML=ev.slice(0,6).map(e=>`<div style="color:var(--ink-2);font-size:.88rem;padding:4px 0">• <b style="color:var(--ink)">${e.decision}</b> · plate <span class="mono">${e.detected_plate||"—"}</span> · ${new Date(e.created_at).toLocaleString()}</div>`).join("")||"No events yet.";}catch{}}
 document.getElementById("arrive").onclick=async()=>{try{const r=await simulate(document.getElementById("camera").value,"arrival",document.getElementById("plate").value);document.getElementById("sim").innerHTML=`Decision: <b>${r.decision}</b> — ${r.message} · spot now <b>${r.spot_status}</b>`;toast(`Arrival: ${r.decision}`);showEvents(r.spot_id);refresh();}catch(e){toast(e.message,false);}};
 document.getElementById("depart").onclick=async()=>{try{const r=await simulate(document.getElementById("camera").value,"departure",null);document.getElementById("sim").innerHTML=`Decision: <b>${r.decision}</b> — ${r.message} · spot now <b>${r.spot_status}</b>`;showEvents(r.spot_id);refresh();}catch(e){toast(e.message,false);}};
-refresh();</script></body></html>
+if(allowed)refresh();</script></body></html>

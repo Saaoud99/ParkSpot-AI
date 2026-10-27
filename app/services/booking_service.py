@@ -73,6 +73,15 @@ async def hold(db: AsyncSession, user: User, data: HoldIn) -> Booking:
         total_price=quote["total"], currency=quote["currency"], pricing_source=quote["pricing_source"],
     )
     await booking_repo.create(db, booking)
+    # Capacity guard (revalidated at submit time, per §6): after inserting,
+    # recount overlapping live reservations inside this transaction. If a
+    # concurrent hold took the last authorized space first, this hold must
+    # not commit — rolling back prevents overbooking beyond the partner
+    # agreement's authorized capacity.
+    taken = await spot_repo.overlapping_count(db, spot.id, start, end)
+    if taken > spot.authorized_capacity:
+        await db.rollback()
+        raise ConflictError("spot unavailable for selected time", code="spot_unavailable")
     await _refresh_spot_status(db, spot.id)
     await db.commit()
     await db.refresh(booking)

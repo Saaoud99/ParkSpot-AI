@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import time
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Enum, Float, ForeignKey, Index, Numeric, SmallInteger, String, Text, Time
+from sqlalchemy import Boolean, CheckConstraint, Enum, Float, ForeignKey, Index, Integer, Numeric, SmallInteger, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -16,6 +16,8 @@ class ParkingSpot(Base, TimestampMixin):
         CheckConstraint("latitude BETWEEN -90 AND 90", name="ck_spot_lat"),
         CheckConstraint("longitude BETWEEN -180 AND 180", name="ck_spot_lng"),
         CheckConstraint("base_price_per_hour >= 0", name="ck_spot_price"),
+        CheckConstraint("total_capacity >= 0", name="ck_spot_total_capacity"),
+        CheckConstraint("authorized_capacity >= 0 AND authorized_capacity <= total_capacity", name="ck_spot_authorized_capacity"),
         Index("ix_spot_lat_lng", "latitude", "longitude"),
     )
 
@@ -32,6 +34,11 @@ class ParkingSpot(Base, TimestampMixin):
     has_ev_charging: Mapped[bool] = mapped_column(Boolean, default=False)
     max_vehicle_size: Mapped[VehicleSize] = mapped_column(Enum(VehicleSize, native_enum=False, length=24), default=VehicleSize.standard)
     base_price_per_hour: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    # Facility capacity model: total physical spaces vs the subset the
+    # partner agreement authorizes ParkSpot to sell. Existing/legacy rows
+    # default to 1/1, preserving the original single-space behaviour.
+    total_capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    authorized_capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     dynamic_pricing_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     max_multiplier: Mapped[Decimal] = mapped_column(Numeric(4, 2), default=Decimal("2.00"))

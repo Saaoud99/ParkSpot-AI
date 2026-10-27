@@ -1,0 +1,45 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>My bookings — ParkSpot AI</title><meta name="theme-color" content="#16845B"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;800&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
+<body>
+<header class="topbar"><div class="topbar-inner"><a class="logo" href="/index.html">ParkSpot <em>AI</em></a>
+<nav aria-label="Primary" style="display:flex;gap:4px"><a class="navlink" href="/index.html">Find parking</a><a class="navlink" aria-current="page" href="/bookings.html">My bookings</a><a class="navlink" href="/host.html">Partner ops</a><a class="navlink" href="/admin.html">Admin</a></nav>
+<span style="margin-left:auto"><button class="chip" id="logout">Logout</button></span></div></header>
+<main style="max-width:900px;margin:0 auto;padding:20px 16px 70px">
+  <section id="profile" class="card reveal" style="margin-bottom:14px"><h2 style="margin-top:0">Profile</h2><div id="me" aria-live="polite"><p style="color:var(--ink-2)">Loading…</p></div></section>
+  <h1 style="font-size:1.5rem;margin:8px 0 12px">My bookings</h1>
+  <div id="list" aria-live="polite"></div>
+</main>
+<nav class="mobile-nav" aria-label="Mobile navigation">
+  <a href="/index.html"><span aria-hidden="true">🅿️</span>Find</a>
+  <a href="/bookings.html" aria-current="page"><span aria-hidden="true">🎫</span>Bookings</a>
+  <a href="/host.html"><span aria-hidden="true">🏢</span>Partner</a>
+  <a href="/bookings.html#profile"><span aria-hidden="true">👤</span>Account</a>
+</nav>
+<script src="/js/pwa.js"></script>
+<script type="module">import {api} from "/js/api.js";import {logout,requireAuth} from "/js/auth.js";import {cancelBooking} from "/js/booking.js";import {toast,emptyState,skeletons} from "/js/ui.js";
+document.getElementById("logout").onclick=logout;
+const list=document.getElementById("list");
+const PILL={held:"pill-hold",confirmed:"pill-go",active:"pill-go",completed:"pill-go",cancelled:"pill-stop",expired:"pill-stop",no_show:"pill-stop"};
+async function load(){
+ if(!requireAuth())return;
+ try{const me=await api("/auth/me");document.getElementById("me").innerHTML=`<b>${me.full_name}</b> · ${me.email}<br><span style="color:var(--ink-2);font-size:.88rem">Role: ${me.role} · Member since ${new Date(me.created_at).toLocaleDateString()}</span>`;
+  try{const vs=await api("/vehicles");if(vs.length)document.getElementById("me").innerHTML+=`<br><span style="color:var(--ink-2);font-size:.88rem">Vehicles: ${vs.map(v=>`<span class="mono">${v.plate}</span>`).join(", ")}</span>`;}catch{}}
+ catch(e){document.getElementById("me").innerHTML=`<p style="color:var(--error)">${e.message}</p>`;}
+ skeletons(list,2);
+ try{const page=await api("/bookings?limit=50");const items=page.items||[];
+  if(!items.length){emptyState(list,"🎫","No bookings yet","When you reserve parking, it will appear here with your QR access pass.");return;}
+  list.innerHTML="";
+  items.forEach(b=>{const d=document.createElement("article");d.className="card card-hover reveal";d.style.marginBottom="12px";
+   d.innerHTML=`<div style="display:flex;justify-content:space-between;gap:10px"><b>${b.spot?b.spot.title:"Parking"}</b><span class="pill ${PILL[b.status]||"pill-hold"}">${b.status}</span></div>
+   <p style="color:var(--ink-2);margin:6px 0">${b.spot?b.spot.address:""} · <span class="mono">${b.vehicle_plate}</span></p>
+   <p class="mono" style="margin:4px 0;font-size:.88rem">${new Date(b.start_time).toLocaleString()} → ${new Date(b.end_time).toLocaleString()}</p>
+   <p style="margin:4px 0">Total <span class="mono" style="font-weight:700">$${Number(b.total_price).toFixed(2)}</span></p>`;
+   const row=document.createElement("div");row.style.cssText="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px";
+   const view=document.createElement("a");view.className="btn";view.href=`/booking.html?id=${b.id}`;view.textContent=b.status==="held"?"Review & confirm →":"View pass →";row.appendChild(view);
+   if(["held","confirmed"].includes(b.status)){const c=document.createElement("button");c.className="btn btn-ghost";c.textContent="Cancel booking";c.onclick=async()=>{c.disabled=true;try{await cancelBooking(b.id);toast("Booking cancelled");load();}catch(e){toast(e.message,false);c.disabled=false;}};row.appendChild(c);}
+   d.appendChild(row);list.appendChild(d);});
+ }catch(e){emptyState(list,"⚠️","Couldn't load bookings",`${e.message} — check your connection and refresh.`);}
+}
+load();</script></body></html>

@@ -4,16 +4,24 @@
 <script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
 <body style="display:grid;place-items:center;padding:24px 16px;min-height:100dvh">
 <main class="card reveal" style="max-width:420px;width:100%;padding:32px">
+  <a href="/index.html" class="btn btn-ghost" style="min-height:40px;padding:8px 14px;margin-bottom:18px">← Back to home</a><br>
   <a class="logo" href="/index.html" style="font-size:1.5rem">ParkSpot <em>AI</em></a>
-  <h1 style="font-size:1.35rem;margin:16px 0 4px">Welcome back</h1><p style="color:var(--ink-2);margin-top:0">Log in to book, manage trips, or host your spot.</p>
+  <h1 style="font-size:1.35rem;margin:16px 0 4px">Welcome back</h1><p style="color:var(--ink-2);margin-top:0">Log in to book, manage trips, or access partner operations.</p>
+  <p id="notice" style="display:none;color:var(--warn);background:var(--warn-bg);border-radius:10px;padding:10px 12px">Your session has expired — please log in again to continue.</p>
   <form id="f"><label for="email">Email</label><input id="email" type="email" required autocomplete="email" placeholder="you@example.com" style="margin:6px 0 12px">
   <label for="password">Password</label><input id="password" type="password" required autocomplete="current-password" placeholder="Your password" style="margin:6px 0 16px">
   <button id="go" class="btn" style="width:100%">Log in</button><p id="msg" role="alert"></p></form>
-  <p>No account? <a href="/register.html">Create one</a></p>
-  <div style="background:var(--surface-2);border:1px solid var(--border);padding:12px;border-radius:10px;font-size:.85rem;color:var(--ink-2)">Demo logins<br><span class="mono">driver@demo.test / demo1234</span><br><span class="mono">host@demo.test / demo1234</span></div>
+  <p>No account? <a id="reglink" href="/register.html">Create one</a></p>
+  <div style="background:var(--surface-2);border:1px solid var(--border);padding:12px;border-radius:10px;font-size:.85rem;color:var(--ink-2)">Demo logins<br><span class="mono">driver@demo.test / demo1234</span><br><span class="mono">host@demo.test / demo1234</span> (partner ops)</div>
 </main>
 <script src="/js/pwa.js"></script>
-<script type="module">import {api} from "/js/api.js";import {saveTokens} from "/js/auth.js";
+<script type="module">import {api} from "/js/api.js";import {saveTokens,safeNext} from "/js/auth.js";
+const params=new URLSearchParams(location.search);
+if(params.get("reason")==="expired")document.getElementById("notice").style.display="block";
+if(params.get("next"))document.getElementById("reglink").href=`/register.html?next=${encodeURIComponent(params.get("next"))}`;
 document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const go=document.getElementById("go");go.disabled=true;go.textContent="Logging in…";
-try{const t=await api("/auth/login",{method:"POST",body:{email:email.value,password:password.value}});saveTokens(t);const me=await api("/auth/me");location.href=me.role==="host"?"/host.html":me.role==="admin"?"/admin.html":"/index.html";}
+try{const t=await api("/auth/login",{method:"POST",body:{email:document.getElementById("email").value,password:document.getElementById("password").value}});saveTokens(t);
+ const dest=safeNext(null);
+ if(dest){location.href=dest;return;}
+ const me=await api("/auth/me");location.href=me.role==="host"?"/host.html":me.role==="admin"?"/admin.html":"/index.html";}
 catch(err){const m=document.getElementById("msg");m.textContent=err.message;m.style.color="var(--error)";go.disabled=false;go.textContent="Log in";}});</script></body></html>
