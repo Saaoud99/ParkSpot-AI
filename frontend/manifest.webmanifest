@@ -1,0 +1,1 @@
+{"name": "ParkSpot AI", "short_name": "ParkSpot", "description": "Find and reserve guaranteed private parking.", "start_url": "/index.html", "scope": "/", "display": "standalone", "background_color": "#F7F8F6", "theme_color": "#16845B", "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]}

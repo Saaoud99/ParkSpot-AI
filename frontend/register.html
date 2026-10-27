@@ -1,6 +1,20 @@
-<!doctype html><html><head><meta charset="utf-8"><title>ParkSpot AI — Register</title><script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
-<body class="bg-gray-100 p-8"><div class="card max-w-md mx-auto"><h1 class="text-2xl font-bold mb-4">Register</h1>
-<input id="name" placeholder="Full name" class="mb-2"><input id="email" placeholder="Email" class="mb-2"><input id="password" type="password" placeholder="Password (8+)" class="mb-2">
-<select id="role" class="mb-2"><option value="driver">Driver</option><option value="host">Host</option></select>
-<button id="go" class="btn w-full">Register</button><p id="msg"></p></div>
-<script type="module">import {api} from "/js/api.js";document.getElementById("go").onclick=async()=>{try{await api("/auth/register",{method:"POST",body:{email:email.value,password:password.value,full_name:name.value,role:role.value}});location.href="/login.html";}catch(e){msg.textContent=e.message;}};</script></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Register — ParkSpot AI</title><meta name="theme-color" content="#16845B"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;800&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
+<body style="display:grid;place-items:center;padding:24px 16px;min-height:100dvh">
+<main class="card reveal" style="max-width:420px;width:100%;padding:32px">
+  <a class="logo" href="/index.html" style="font-size:1.5rem">ParkSpot <em>AI</em></a>
+  <h1 style="font-size:1.35rem;margin:16px 0 4px">Create your account</h1><p style="color:var(--ink-2);margin-top:0">Book guaranteed parking — or earn from your driveway.</p>
+  <form id="f"><label for="name">Full name</label><input id="name" required autocomplete="name" placeholder="Alex Rivera" style="margin:6px 0 12px">
+  <label for="email">Email</label><input id="email" type="email" required autocomplete="email" placeholder="you@example.com" style="margin:6px 0 12px">
+  <label for="password">Password</label><input id="password" type="password" required minlength="8" maxlength="72" autocomplete="new-password" placeholder="8+ characters" style="margin:6px 0 12px">
+  <label for="role">I am a</label><select id="role" style="margin:6px 0 16px"><option value="driver">Driver — I need parking</option><option value="host">Host — I rent out my spot</option></select>
+  <button id="go" class="btn" style="width:100%">Create account</button><p id="msg" role="alert"></p></form>
+  <p>Already registered? <a href="/login.html">Log in</a></p>
+</main>
+<script src="/js/pwa.js"></script>
+<script type="module">import {api} from "/js/api.js";import {toast} from "/js/ui.js";
+document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const go=document.getElementById("go");go.disabled=true;
+try{await api("/auth/register",{method:"POST",body:{email:email.value,password:password.value,full_name:name.value,role:role.value}});toast("Account created — please log in");setTimeout(()=>location.href="/login.html",700);}
+catch(err){const m=document.getElementById("msg");m.textContent=err.message;m.style.color="var(--error)";go.disabled=false;}});</script></body></html>

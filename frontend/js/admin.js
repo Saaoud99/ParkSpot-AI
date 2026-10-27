@@ -5,3 +5,4 @@ export async function loadAdmin() {
 }
 export async function createEvent(body) { return api("/admin/events", { method: "POST", body }); }
 export async function recompute() { return api("/pricing/recompute", { method: "POST" }); }
+export async function loadPricingSnapshots() { return api("/pricing/snapshots"); }

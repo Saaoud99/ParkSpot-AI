@@ -20,10 +20,17 @@ from app.schemas.spot import (
     SpotSearchResult,
     SpotUpdate,
 )
-from app.services import spot_service
+from app.services import geocode_service, spot_service
 from app.utils.timeutil import parse_iso, utcnow
 
 router = APIRouter(prefix="/spots", tags=["spots"])
+
+
+@router.get("/geocode")
+async def geocode(q: str = Query(..., min_length=1), lat: float | None = None, lng: float | None = None):
+    """Resolve a destination name to coordinates (Mapbox, landmark fallback). Additive endpoint for the discovery UI."""
+    proximity = (lat, lng) if lat is not None and lng is not None else None
+    return await geocode_service.geocode(q, proximity)
 
 
 @router.get("/search", response_model=list[SpotSearchResult])

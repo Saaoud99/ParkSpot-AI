@@ -40,3 +40,7 @@ python -m scripts.simulate_camera --camera cam-001 --arrive DEMO1234
 ```
 
 Architecture: FastAPI + SQLAlchemy 2.0 async (SQLite/WAL, Alembic) → services own authorization & commits, repositories never commit → Llama 3 tool-calling agent (user injected via `ToolContext`, never from the model) → APScheduler workers expire holds, mark no-shows, auto-complete, and refresh per-zone pricing snapshots.
+
+## Frontend
+
+Premium Light UI (default and only theme): map-first discovery with a synchronized results list on desktop, Map/List toggle on mobile, hold → review (price breakdown, hold expiry, cancellation terms) → confirm booking flow, Llama 3 chat drawer with structured spot cards and optional Web Speech voice input (hidden where unsupported; text always works), host studio with camera-simulator entry monitoring (access grants happen only server-side), and an admin console that separates observed stats from Llama/heuristic pricing snapshots. Installable as a PWA — the service worker caches only the static shell and never caches `/api/` responses, so availability, auth and bookings always come from the network.
