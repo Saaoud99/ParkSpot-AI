@@ -1,0 +1,6 @@
+<!doctype html><html><head><meta charset="utf-8"><title>ParkSpot AI — Register</title><script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
+<body class="bg-gray-100 p-8"><div class="card max-w-md mx-auto"><h1 class="text-2xl font-bold mb-4">Register</h1>
+<input id="name" placeholder="Full name" class="mb-2"><input id="email" placeholder="Email" class="mb-2"><input id="password" type="password" placeholder="Password (8+)" class="mb-2">
+<select id="role" class="mb-2"><option value="driver">Driver</option><option value="host">Host</option></select>
+<button id="go" class="btn w-full">Register</button><p id="msg"></p></div>
+<script type="module">import {api} from "/js/api.js";document.getElementById("go").onclick=async()=>{try{await api("/auth/register",{method:"POST",body:{email:email.value,password:password.value,full_name:name.value,role:role.value}});location.href="/login.html";}catch(e){msg.textContent=e.message;}};</script></body></html>

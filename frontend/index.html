@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>ParkSpot AI</title><script src="https://cdn.tailwindcss.com"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.13.0/mapbox-gl.css" rel="stylesheet"><script src="https://api.mapbox.com/mapbox-gl-js/v3.13.0/mapbox-gl.js"></script><link href="/css/app.css" rel="stylesheet"></head>
+<body class="bg-gray-100"><nav class="bg-white p-4 flex gap-4"><b>ParkSpot AI</b><a href="/host.html">Host</a><a href="/admin.html">Admin</a><button onclick="localStorage.clear();location.href='/login.html'">Logout</button></nav>
+<div class="grid md:grid-cols-2 gap-4 p-4"><div><div id="map"></div><div class="card mt-3"><h2 class="font-bold">Search</h2>
+<label>Start</label><input id="start" type="datetime-local"><label>End</label><input id="end" type="datetime-local">
+<label><input id="covered" type="checkbox" style="width:auto"> Covered</label> <button id="search" class="btn">Search</button></div><div id="results"></div></div>
+<div class="card"><h2 class="font-bold text-xl">Booking assistant</h2><div id="chatlog" class="h-96 overflow-auto border p-2 mb-2"></div>
+<input id="chatin" placeholder="Find me a covered spot near downtown for 2 hours tomorrow under $10"><button id="chatsend" class="btn mt-2">Send</button></div></div>
+<script type="module">import {initMap,searchAndRender} from "/js/map.js";import {initChat} from "/js/chat.js";import {spotCard,el} from "/js/ui.js";import {holdAndConfirm} from "/js/booking.js";import {publicConfig} from "/js/api.js";
+const cfg=await publicConfig();window._demoLocation={lat:cfg.demo_center.lat,lng:cfg.demo_center.lng};
+const now=new Date(Date.now()+3600e3),later=new Date(Date.now()+3*3600e3);const iso=d=>new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,16);start.value=iso(now);end.value=iso(later);
+await initMap("map",()=>{});
+async function doSearch(){const s=new Date(start.value).toISOString(),e=new Date(end.value).toISOString();const spots=await searchAndRender(cfg.demo_center.lat,cfg.demo_center.lng,{radius_km:5,start:s,end:e,...(covered.checked?{covered:true}:{})},spot=>book(spot,s,e));results.innerHTML="";spots.forEach(sp=>results.appendChild(spotCard(sp,x=>book(x,s,e))));}
+async function book(spot,s,e){if(!localStorage.getItem("access_token")){location.href="/login.html";return;}await holdAndConfirm(spot.id,s,e);}
+search.onclick=doSearch;doSearch();
+initChat("chatlog","chatin","chatsend",spots=>{results.innerHTML="";spots.forEach(sp=>results.appendChild(spotCard({...sp,distance_km:sp.distance_km||0,estimated_total:sp.estimated_total},()=>{})));});
+</script></body></html>

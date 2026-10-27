@@ -1,0 +1,42 @@
+# ParkSpot AI
+
+Airbnb for parking: private hosts list driveways/garages/lots, drivers pre-book guaranteed spots via a Llama 3 conversational assistant or a Mapbox map. Camera feeds (SAM 2 + EasyOCR, or zero-dependency simulator) detect vehicles, read plates, grant access and keep availability live. A Llama 3 dynamic pricing engine adjusts prices to demand, weather and events.
+
+## Quick start
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env   # set SECRET_KEY (32+ chars); LLAMA_API_KEY / MAPBOX_ACCESS_TOKEN optional
+alembic upgrade head
+python -m scripts.seed
+uvicorn app.main:app --reload
+```
+
+Open http://localhost:8000 — demo logins: `driver@demo.test` / `host@demo.test` / `admin@demo.test`, password `demo1234`. Driver plate: `DEMO1234`. Cameras: `cam-001`…`cam-006`.
+
+Without `LLAMA_API_KEY`, chat returns a degraded friendly reply and pricing uses the deterministic heuristic — the demo never hangs. Without a Mapbox token, the map shows a fallback message and search/list still work.
+
+## Real vision mode
+
+```bash
+pip install -r requirements-vision.txt
+VISION_MODE=real uvicorn app.main:app
+```
+
+Simulate mode (default) needs no ML dependencies; SAM 2/EasyOCR/torch/cv2 are imported lazily only in real adapters.
+
+## API
+
+All routes under `/api/v1` (plus `GET /health`). Highlights: `POST /auth/register|login`, `GET /spots/search?lat&lng`, `POST /bookings/hold` → `POST /bookings/{id}/confirm` → `GET /bookings/{id}/qr`, `POST /chat`, `POST /pricing/recompute` (admin), `POST /vision/simulate`, `POST /access/verify-qr`, `GET /admin/stats`. Errors are `{"detail": "...", "code": "..."}`.
+
+Alternative Llama providers are env-only: set `LLAMA_BASE_URL`/`LLAMA_MODEL` for Meta Llama API (default), Groq, Together AI, or Ollama (`http://localhost:11434/v1`, `llama3.1:8b`).
+
+## Tests & demo
+
+```bash
+pytest -q
+bash scripts/demo_flow.sh   # with server running after seed
+python -m scripts.simulate_camera --camera cam-001 --arrive DEMO1234
+```
+
+Architecture: FastAPI + SQLAlchemy 2.0 async (SQLite/WAL, Alembic) → services own authorization & commits, repositories never commit → Llama 3 tool-calling agent (user injected via `ToolContext`, never from the model) → APScheduler workers expire holds, mark no-shows, auto-complete, and refresh per-zone pricing snapshots.

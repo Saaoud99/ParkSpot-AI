@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Host — ParkSpot AI</title><script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
+<body class="bg-gray-100 p-6"><h1 class="text-2xl font-bold mb-3">Host dashboard</h1><div class="grid md:grid-cols-2 gap-4">
+<div class="card"><h2 class="font-bold">Create spot</h2><input id="title" placeholder="Title" class="mb-1"><input id="address" placeholder="Address" class="mb-1">
+<input id="price" type="number" value="5" placeholder="Price/hour" class="mb-1"><button id="create" class="btn">Create (demo location)</button><p id="cmsg"></p>
+<h2 class="font-bold mt-4">My spots</h2><div id="spots"></div></div>
+<div class="card"><h2 class="font-bold">Bookings & camera simulator</h2><div id="bookings"></div>
+<input id="plate" placeholder="Plate e.g. DEMO1234" class="mb-1"><input id="camera" placeholder="Camera id e.g. cam-001" class="mb-1">
+<button id="arrive" class="btn">Simulate arrival</button> <button id="depart" class="btn">Simulate departure</button><p id="sim"></p><div id="events"></div></div></div>
+<script type="module">import {loadHost,createSpot,simulate,loadEvents} from "/js/host.js";import {publicConfig} from "/js/api.js";
+const cfg=await publicConfig();async function refresh(){const {spots,bookings}=await loadHost();
+document.getElementById("spots").innerHTML=spots.map(s=>`<div class="border p-2 mb-1"><b>${s.title}</b> $${s.base_price_per_hour}/h — ${s.status} ${s.camera_id?"· camera "+s.camera_id:""} · upcoming ${s.upcoming_bookings_count} · earnings $${s.earnings_total}</div>`).join("");
+document.getElementById("bookings").innerHTML=bookings.map(b=>`<div class="border p-2 mb-1">#${b.id} ${b.spot.title} — ${b.status} ${b.vehicle_plate} $${b.total_price}</div>`).join("")||"No bookings yet";}
+create.onclick=async()=>{const s=await createSpot({title:title.value,address:address.value,latitude:cfg.demo_center.lat+Math.random()*.01,longitude:cfg.demo_center.lng+Math.random()*.01,spot_type:"driveway",is_covered:false,has_ev_charging:false,base_price_per_hour:price.value});cmsg.textContent="Created spot "+s.id;refresh();};
+arrive.onclick=async()=>{const r=await simulate(camera.value,"arrival",plate.value);sim.textContent=`${r.decision}: ${r.message} spot=${r.spot_status}`;refresh();};
+depart.onclick=async()=>{const r=await simulate(camera.value,"departure",null);sim.textContent=`${r.decision}: ${r.message} spot=${r.spot_status}`;refresh();};
+refresh();</script></body></html>
