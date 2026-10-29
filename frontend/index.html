@@ -1,19 +1,21 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>ParkSpot AI — Find & reserve parking</title><meta name="theme-color" content="#16845B"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
+<title>ParkSpot AI — Find & reserve parking</title><meta name="theme-color" content="#0B6E3D"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;800&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.13.0/mapbox-gl.css" rel="stylesheet"><script src="https://api.mapbox.com/mapbox-gl-js/v3.13.0/mapbox-gl.js"></script>
 <link href="/css/app.css" rel="stylesheet"></head>
 <body>
+<div id="splash" role="img" aria-label="ParkSpot AI — Smarter parking, easier journeys"><div class="splash-inner"><img src="/icon.svg" alt=""><div class="splash-name">ParkSpot <em>AI</em></div><p class="tagline">Smarter parking, easier journeys</p></div></div>
 <header class="topbar"><div class="topbar-inner">
-  <a class="logo" href="/index.html">ParkSpot <em>AI</em></a>
+  <a class="logo" href="/index.html"><img src="/icon.svg" alt="" width="34" height="34">ParkSpot <em>AI</em></a>
   <nav aria-label="Primary" style="display:flex;gap:4px"><a class="navlink" aria-current="page" href="/index.html">Find parking</a><a class="navlink" href="/bookings.html">My bookings</a><a class="navlink ops-link" href="/host.html" style="display:none">Partner ops</a><a class="navlink admin-link" href="/admin.html" style="display:none">Admin</a></nav>
   <span style="margin-left:auto"><button class="chip" id="logout">Logout</button></span>
 </div></header>
 
 <main style="max-width:1240px;margin:0 auto;padding:20px 16px 120px">
   <h1 style="font-size:clamp(1.6rem,3.4vw,2.4rem);margin:0 0 4px">Find parking before you leave</h1>
-  <p style="color:var(--ink-2);margin:0 0 16px;max-width:620px">Real, bookable private spots near your destination — live prices, plate-recognised entry, guaranteed on arrival.</p>
+  <p style="color:var(--ink-2);margin:0 0 16px;max-width:620px">Reserve ParkSpot-authorized spaces at participating facilities near your destination. Prices and spaces left are checked live on the server for your exact times — entry is by QR pass, with plate recognition where a facility camera is installed.</p>
+  <p id="area-line" style="color:var(--ink-2);margin:-8px 0 14px;font-size:.9rem" role="status">📍 Showing parking near the demo center — search a destination to move the map.</p>
 
   <form id="searchbar" class="card" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;padding:14px;margin-bottom:12px" aria-label="Search parking">
     <div style="flex:1 1 200px"><label for="place">Destination</label><input id="place" placeholder="e.g. Downtown, Union Square" autocomplete="off"></div>
@@ -25,6 +27,10 @@
       <button class="chip" type="button" id="f-covered" aria-pressed="false">☂ Covered</button>
       <button class="chip" type="button" id="f-ev" aria-pressed="false">⚡ EV charging</button>
       <button class="chip" type="button" id="f-cheap" aria-pressed="false">Under $10/hr</button>
+    </div>
+    <div style="flex-basis:100%;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+      <div style="flex:1 1 160px"><label for="ftype">Facility type</label><select id="ftype"><option value="">Any type</option><option value="garage">Garage</option><option value="lot">Lot</option><option value="driveway">Driveway</option><option value="street">Street</option></select></div>
+      <div style="flex:1 1 160px"><label for="sort">Sort results</label><select id="sort"><option value="distance">Nearest first</option><option value="price">Lowest price</option><option value="spaces">Most spaces left</option></select></div>
     </div>
   </form>
 
@@ -42,17 +48,28 @@
 </main>
 
 <nav class="mobile-nav" aria-label="Mobile navigation">
-  <a href="/index.html" aria-current="page"><span aria-hidden="true">🅿️</span>Find</a>
+  <a href="/index.html" aria-current="page"><span aria-hidden="true">🏠</span>Home</a>
+  <a href="/index.html#map"><span aria-hidden="true">🗺️</span>Map</a>
   <a href="/bookings.html"><span aria-hidden="true">🎫</span>Bookings</a>
-  <a href="/host.html"><span aria-hidden="true">🏢</span>Partner</a>
-  <a href="/bookings.html#profile"><span aria-hidden="true">👤</span>Account</a>
+  <a href="/host.html" class="mobile-ops" style="display:none"><span aria-hidden="true">🏢</span>Partner</a>
+  <a href="/bookings.html#profile"><span aria-hidden="true">👤</span>Profile</a>
 </nav>
 <button id="chat-fab" class="btn" aria-label="Open AI parking assistant">💬 Ask AI</button>
+<div id="onboarding" role="dialog" aria-modal="true" aria-labelledby="ob-title" style="display:none;position:fixed;inset:0;z-index:95;background:rgba(32,41,35,.45);place-items:end center;padding:16px">
+  <div class="card" style="max-width:430px;width:100%;text-align:center;padding:28px 24px;margin-bottom:12px">
+    <img src="/icon.svg" alt="ParkSpot AI logo" width="72" height="72" style="width:72px;height:72px;border-radius:20px">
+    <h2 id="ob-title" style="margin:14px 0 6px;font-size:1.4rem">Find &amp; reserve parking with AI</h2>
+    <p style="color:var(--ink-2);margin:0 0 6px">Search, compare, and book ParkSpot-authorized spaces near your destination — checked live on the server.</p>
+    <p style="color:var(--ink-3);font-size:.85rem;margin:0 0 18px">Browse freely — you'll only be asked to log in when you reserve.</p>
+    <button id="ob-start" class="btn" style="width:100%">Get started</button>
+    <p style="margin:14px 0 0;color:var(--ink-2)">Already have an account? <a href="/login.html">Login</a> · <button id="ob-skip" class="chip" style="min-height:32px">Skip</button></p>
+  </div>
+</div>
 <div id="chat-scrim"></div>
 <aside id="chat-drawer" aria-label="AI parking assistant">
   <div style="display:flex;align-items:center;gap:12px;padding:16px;border-bottom:1px solid var(--border)">
-    <div style="width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:var(--brand-soft)" aria-hidden="true">🤖</div>
-    <div><div class="display" style="font-weight:800">ParkSpot Assistant</div><div style="color:var(--brand-dark);font-size:.82rem">Powered by Llama 3 · live listings</div></div>
+    <div style="width:42px;height:42px;border-radius:12px;overflow:hidden;flex:0 0 auto" aria-hidden="true"><img src="/icon.svg" alt="" width="42" height="42"></div>
+    <div><div class="display" style="font-weight:800">ParkSpot Assistant</div><div style="color:var(--brand-dark);font-size:.82rem">Searches live ParkSpot listings · AI replies when configured</div></div>
     <button id="chat-close" class="chip" style="margin-left:auto" aria-label="Close assistant">✕</button>
   </div>
   <div style="padding:12px 16px;display:flex;gap:8px;flex-wrap:wrap">
@@ -70,7 +87,9 @@
   </div>
 </aside>
 <script src="/js/pwa.js"></script>
-<script type="module">import {initMap,searchAndRender,highlightMarker} from "/js/map.js";import {initChat,initDrawer,initVoice} from "/js/chat.js";import {spotCard,skeletons,emptyState,toast,markSelected} from "/js/ui.js";import {createHold} from "/js/booking.js";import {publicConfig,api,token} from "/js/api.js";import {logout} from "/js/auth.js";
+<script type="module">import {initMap,searchAndRender,highlightMarker} from "/js/map.js";
+// Brief branded splash: fades as soon as the shell is interactive, never gates use.
+{const sp=document.getElementById("splash");const hide=()=>{sp?.classList.add("hide");setTimeout(()=>sp?.remove(),400);};setTimeout(hide,650);window.addEventListener("load",()=>setTimeout(hide,250),{once:true});}import {initChat,initDrawer,initVoice} from "/js/chat.js";import {spotCard,skeletons,emptyState,toast,markSelected} from "/js/ui.js";import {createHold} from "/js/booking.js";import {publicConfig,api,token} from "/js/api.js";import {logout} from "/js/auth.js";
 document.getElementById("logout").onclick=logout;
 // Show operations links only to roles that can actually use them (backend still enforces).
 if(token()){try{const r=await fetch("/api/v1/auth/me",{headers:{Authorization:`Bearer ${token()}`}});if(r.ok){const me=await r.json();
@@ -91,30 +110,49 @@ async function reserve(spot){const t=validTimes();if(!t)return;
     location.href="/login.html?next="+encodeURIComponent("/index.html?resume=1");return;}
   toast("Holding your space while you review…");
   try{const held=await createHold(spot.id,t.s,t.e);location.href=`/booking.html?hold=${held.id}`;}catch(err){toast(err.message,false);doSearch();}}
+let lastSpots=[];
+function renderResults(spots){const sorted=[...spots];const mode=document.getElementById("sort").value;
+  if(mode==="price")sorted.sort((a,b)=>Number(a.price_per_hour_now)-Number(b.price_per_hour_now));
+  else if(mode==="spaces")sorted.sort((a,b)=>(b.spaces_available??0)-(a.spaces_available??0));
+  else sorted.sort((a,b)=>(a.distance_km??0)-(b.distance_km??0));
+  results.innerHTML="";count.textContent=sorted.length?`· ${sorted.length} found`:"";
+  if(!sorted.length){emptyState(results,"🔍","No parking found","Try a different destination, wider times, or remove a filter.");return;}
+  sorted.forEach(sp=>results.appendChild(spotCard(sp,reserve)));}
 async function doSearch(ev){ev&&ev.preventDefault();const t=validTimes();if(!t)return;skeletons(results,3);count.textContent="";
   const {s,e}=t;const params={radius_km:5,start:s,end:e};
   if(document.getElementById("f-covered").getAttribute("aria-pressed")==="true")params.covered=true;
   if(document.getElementById("f-ev").getAttribute("aria-pressed")==="true")params.ev=true;
   if(document.getElementById("f-cheap").getAttribute("aria-pressed")==="true")params.max_price_per_hour=10;
-  try{const spots=await searchAndRender(center.lat,center.lng,params,sp=>{markSelected(sp.id);document.querySelector(`[data-spot-card="${sp.id}"]`)?.scrollIntoView({behavior:"smooth",block:"center"});});
-    results.innerHTML="";count.textContent=spots.length?`· ${spots.length} found`:"";
-    if(!spots.length){emptyState(results,"🔍","No parking found","Try a different destination, wider times, or remove a filter.");return;}
-    spots.forEach(sp=>results.appendChild(spotCard(sp,reserve)));}
+  const ft=document.getElementById("ftype").value;if(ft)params.spot_type=ft;
+  try{lastSpots=await searchAndRender(center.lat,center.lng,params,sp=>{markSelected(sp.id);document.querySelector(`[data-spot-card="${sp.id}"]`)?.scrollIntoView({behavior:"smooth",block:"center"});});
+    renderResults(lastSpots);}
   catch(err){emptyState(results,"⚠️","Search failed",`${err.message} — check your connection and try again.`);}}
+document.getElementById("sort").onchange=()=>renderResults(lastSpots);
+document.getElementById("ftype").onchange=()=>doSearch();
 document.getElementById("searchbar").addEventListener("submit",async ev=>{ev.preventDefault();
   const q=place.value.trim();
   if(q){try{const g=await api(`/spots/geocode?q=${encodeURIComponent(q)}&lat=${center.lat}&lng=${center.lng}`);
-    if(g.ok){center={lat:g.lat,lng:g.lng};window._demoLocation=center;toast(`Showing parking near ${g.name}`);}
+    if(g.ok){center={lat:g.lat,lng:g.lng};window._demoLocation=center;document.getElementById("area-line").textContent=`📍 Showing parking near ${g.name}`;toast(`Showing parking near ${g.name}`);}
     else toast(`Couldn't resolve “${q}” — showing the current area.`,false);}catch{toast("Destination lookup failed — showing the current area.",false);}}
   doSearch();});
 ["f-covered","f-ev","f-cheap"].forEach(id=>{const b=document.getElementById(id);b.onclick=()=>{b.setAttribute("aria-pressed",b.getAttribute("aria-pressed")!=="true");doSearch();};});
 document.getElementById("locate").onclick=()=>{if(!navigator.geolocation){toast("Location not supported — search by destination instead.",false);return;}
-  navigator.geolocation.getCurrentPosition(p=>{center={lat:p.coords.latitude,lng:p.coords.longitude};window._demoLocation=center;toast("Using your location");doSearch();},
+  navigator.geolocation.getCurrentPosition(p=>{center={lat:p.coords.latitude,lng:p.coords.longitude};window._demoLocation=center;document.getElementById("area-line").textContent="📍 Showing parking near your current location";toast("Using your location");doSearch();},
   ()=>toast("Location permission denied — showing the demo area instead.",false),{timeout:8000});};
 const vmap=document.getElementById("v-map"),vlist=document.getElementById("v-list");
 vmap.onclick=()=>{grid.classList.remove("show-list");grid.classList.add("show-map");vmap.setAttribute("aria-pressed","true");vlist.setAttribute("aria-pressed","false");};
 vlist.onclick=()=>{grid.classList.add("show-list");grid.classList.remove("show-map");vlist.setAttribute("aria-pressed","true");vmap.setAttribute("aria-pressed","false");};
 initDrawer("chat-fab","chat-close","chat-drawer","chat-scrim");
+// Arriving via a "#map" link (mobile bottom nav) opens the map view directly.
+if(location.hash==="#map")vmap.onclick();
+// First-visit onboarding: shown once, never to returning/authenticated users.
+{const ob=document.getElementById("onboarding");
+ const seen=localStorage.getItem("parkspot_seen");
+ if(ob&&!seen&&!localStorage.getItem("access_token")){ob.style.display="grid";
+  const done=()=>{localStorage.setItem("parkspot_seen","1");ob.style.display="none";document.getElementById("place")?.focus();};
+  document.getElementById("ob-start").onclick=done;document.getElementById("ob-skip").onclick=done;
+  ob.addEventListener("click",e=>{if(e.target===ob)done();});
+  document.addEventListener("keydown",e=>{if(e.key==="Escape"&&ob.style.display!=="none")done();});}}
 initVoice("mic","chatin","voice-status");
 initChat("chatlog","chatin","chatsend",reserve);
 // Resume a reservation that was interrupted by login/registration.

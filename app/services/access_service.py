@@ -63,6 +63,20 @@ async def handle_detection(db: AsyncSession, camera_id: str, present: bool, plat
     camera.last_detected_plate = normalized
     booking = await booking_repo.find_by_plate_window(db, spot.id, normalized or "", now) if normalized else None
     if booking and normalized and plates_match(booking.vehicle_plate, normalized):
+        if booking.status == BookingStatus.active:
+            # Already checked in: a second plate read must not mint a
+            # fresh grant or overwrite the original check-in time.
+            ev = AccessEvent(spot_id=spot.id, booking_id=booking.id, camera_id=camera_id, detected_plate=normalized, matched_plate=booking.vehicle_plate, decision=AccessDecision.denied, vehicle_confidence=vconf, plate_confidence=pconf, source=source)
+            await camera_repo.create_event(db, ev)
+            await db.commit()
+            return {"camera_id": camera_id, "spot_id": spot.id, "decision": "denied", "detected_plate": normalized, "matched_booking_id": booking.id, "vehicle_confidence": vconf, "plate_confidence": pconf, "spot_status": spot.status.value, "message": "Vehicle already checked in for this booking."}
+        if pconf < get_settings().PLATE_CONFIDENCE_MIN:
+            # OCR is an uncertain observation, not a fact: low-confidence
+            # reads are logged and denied; the driver can use the QR pass.
+            ev = AccessEvent(spot_id=spot.id, booking_id=booking.id, camera_id=camera_id, detected_plate=normalized, matched_plate=None, decision=AccessDecision.denied, vehicle_confidence=vconf, plate_confidence=pconf, source=source)
+            await camera_repo.create_event(db, ev)
+            await db.commit()
+            return {"camera_id": camera_id, "spot_id": spot.id, "decision": "denied", "detected_plate": normalized, "matched_booking_id": None, "vehicle_confidence": vconf, "plate_confidence": pconf, "spot_status": spot.status.value, "message": "Plate read confidence too low — please use the QR pass or manual verification."}
         result = await _grant(db, booking, source, normalized, camera_id, vconf, pconf, normalized)
         await db.commit()
         return {"camera_id": camera_id, "spot_id": spot.id, "detected_plate": normalized, "matched_booking_id": result["booking_id"], "vehicle_confidence": vconf, "plate_confidence": pconf, **result}
@@ -79,8 +93,15 @@ async def verify_qr(db: AsyncSession, user: User, token: str) -> dict:
         raise NotFoundError("booking not found")
     if booking.spot and booking.spot.host_id != user.id and user.role.value != "admin":
         raise ForbiddenError("forbidden")
+    # Bind the presented pass to the exact booking record: a signed token
+    # for another facility/plate, or one since revoked (cancellation
+    # clears qr_token), must never validate.
+    if booking.qr_token != token or int(payload.get("spot", -1)) != booking.spot_id or payload.get("plate") != booking.vehicle_plate:
+        return {"valid": False, "booking_id": booking.id, "spot_id": booking.spot_id, "plate": booking.vehicle_plate, "decision": "denied", "message": "pass does not match this booking"}
     now = utcnow()
-    if booking.status not in (BookingStatus.confirmed, BookingStatus.active):
+    if booking.status == BookingStatus.active:
+        return {"valid": False, "booking_id": booking.id, "spot_id": booking.spot_id, "plate": booking.vehicle_plate, "decision": "denied", "message": "pass already used — booking already checked in"}
+    if booking.status != BookingStatus.confirmed:
         return {"valid": False, "booking_id": booking.id, "spot_id": booking.spot_id, "plate": booking.vehicle_plate, "decision": "denied", "message": f"booking is {booking.status.value}"}
     grace = timedelta(minutes=get_settings().ARRIVAL_GRACE_MINUTES)
     if not (to_utc(booking.start_time) - grace <= now <= to_utc(booking.end_time) + grace):

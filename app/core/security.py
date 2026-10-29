@@ -73,7 +73,11 @@ def create_access_pass_token(booking_id: int, plate: str, spot_id: int, start: d
 def decode_access_pass(token: str) -> dict[str, Any]:
     s = get_settings()
     try:
-        payload = jwt.decode(token, s.SECRET_KEY, algorithms=["HS256"])
+        # Signature is always verified. nbf/exp are NOT enforced here: the
+        # authoritative window comes from the booking row in verify_qr, so
+        # an early/late pass gets a structured "outside access window"
+        # denial instead of an opaque auth error at the gate.
+        payload = jwt.decode(token, s.SECRET_KEY, algorithms=["HS256"], options={"verify_exp": False, "verify_nbf": False, "verify_iat": False})
     except jwt.PyJWTError as exc:
         raise AuthError("invalid or expired token") from exc
     if payload.get("type") != "access_pass":

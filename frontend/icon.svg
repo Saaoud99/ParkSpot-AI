@@ -1,1 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#16845B"/><text x="50" y="70" font-size="58" font-family="Arial,sans-serif" font-weight="bold" fill="#fff" text-anchor="middle">P</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="ParkSpot AI logo">
+  <title>ParkSpot AI</title>
+  <defs>
+    <linearGradient id="ps-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B6E3D"/>
+      <stop offset="1" stop-color="#15A35F"/>
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="24" fill="url(#ps-bg)"/>
+  <!-- Location pin -->
+  <path d="M50 12c-13.3 0-24 10.4-24 23.2C26 52.5 50 86 50 86s24-33.5 24-50.8C74 22.4 63.3 12 50 12z" fill="#fff"/>
+  <!-- P for ParkSpot, in brand green, centred in the pin head -->
+  <path d="M41 24h10.2c6 0 10 3.6 10 9s-4 9-10 9H46v10h-5V24zm5 5v8h5c2.9 0 4.8-1.6 4.8-4s-1.9-4-4.8-4H46z" fill="#0B6E3D"/>
+</svg>

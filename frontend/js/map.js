@@ -1,4 +1,5 @@
 import { api, publicConfig } from "./api.js";
+import { esc } from "./ui.js";
 let map, markers = {};
 export async function initMap(containerId) {
   const cfg = await publicConfig();
@@ -38,7 +39,7 @@ export function renderMarkers(spots, onClick) {
     dot.textContent = `$${Number(s.price_per_hour_now).toFixed(0)}`;
     dot.title = `${s.title} — $${s.price_per_hour_now}/hr`;
     const m = new mapboxgl.Marker(dot).setLngLat([s.longitude, s.latitude])
-      .setPopup(new mapboxgl.Popup({ offset: 18 }).setHTML(`<div><b>${s.title}</b><br>${s.address}<br><b>$${s.price_per_hour_now}/hr</b> · est $${s.estimated_total}</div>`))
+      .setPopup(new mapboxgl.Popup({ offset: 18 }).setHTML(`<div><b>${esc(s.title)}</b><br>${esc(s.address)}<br><b>$${esc(s.price_per_hour_now)}/hr</b> · est $${esc(s.estimated_total)}</div>`))
       .addTo(map);
     dot.onclick = () => { highlightMarker(s.id); window.dispatchEvent(new CustomEvent("spot-selected", { detail: s.id })); onClick(s); };
     markers[s.id] = m;

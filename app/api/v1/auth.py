@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.ratelimit import check_rate_limit
 from app.db.models.user import User
 from app.db.session import get_db
 from app.schemas.auth import LoginIn, RefreshIn, RegisterIn, TokenPair, UserOut
@@ -13,17 +14,22 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
-async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)) -> User:
+async def register(data: RegisterIn, request: Request, db: AsyncSession = Depends(get_db)) -> User:
+    check_rate_limit(request, "register", limit=300, window_seconds=3600)
     return await auth_service.register(db, data)
 
 
 @router.post("/login", response_model=TokenPair)
-async def login(data: LoginIn, db: AsyncSession = Depends(get_db)) -> TokenPair:
+async def login(data: LoginIn, request: Request, db: AsyncSession = Depends(get_db)) -> TokenPair:
+    # Keyed per account + IP so credential stuffing against one account is
+    # throttled without locking out a shared-NAT office of other users.
+    check_rate_limit(request, "login", limit=15, window_seconds=300, identity=data.email)
     return await auth_service.login(db, data.email, data.password)
 
 
 @router.post("/token", response_model=TokenPair)
-async def token(username: str = Form(...), password: str = Form(...), db: AsyncSession = Depends(get_db)) -> TokenPair:
+async def token(request: Request, username: str = Form(...), password: str = Form(...), db: AsyncSession = Depends(get_db)) -> TokenPair:
+    check_rate_limit(request, "login", limit=15, window_seconds=300, identity=username)
     return await auth_service.login(db, username, password)
 
 

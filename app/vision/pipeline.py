@@ -32,11 +32,17 @@ async def process_frame(db: AsyncSession, camera: Camera, image_rgb: np.ndarray 
         detection = await asyncio.to_thread(detector.detect, img, roi)
         reading = await asyncio.to_thread(reader.read, img, detection.bbox or roi) if detection.present else None
         return await access_service.handle_detection(db, camera.id, detection.present, reading.text if reading else None, detection.confidence, reading.confidence if reading else 0.0, AccessSource.simulated)
-    height, width = (image_rgb.shape[0], image_rgb.shape[1]) if image_rgb is not None else (480, 640)
-    img = image_rgb if image_rgb is not None else np.zeros((height, width, 3), dtype=np.uint8)
+    # Real mode: a genuine camera frame is required. Never fabricate a
+    # blank frame and run (or pretend to run) real models over it.
+    if image_rgb is None:
+        from app.core.exceptions import ValidationAppError
+
+        raise ValidationAppError("a camera image is required in real vision mode", code="image_required")
+    height, width = image_rgb.shape[0], image_rgb.shape[1]
+    img = image_rgb
     roi = _roi_for(camera, width, height)
     detector = get_detector()
     reader = get_plate_reader()
     detection = await asyncio.to_thread(detector.detect, img, roi)
     reading = await asyncio.to_thread(reader.read, img, detection.bbox or roi) if detection.present else None
-    return await access_service.handle_detection(db, camera.id, detection.present, reading.text if reading else simulated_plate, detection.confidence, reading.confidence if reading else 0.0, AccessSource.camera)
+    return await access_service.handle_detection(db, camera.id, detection.present, reading.text if reading else None, detection.confidence, reading.confidence if reading else 0.0, AccessSource.camera)

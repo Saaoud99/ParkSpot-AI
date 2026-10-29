@@ -9,15 +9,15 @@ from app.schemas.spot import SpotSearchResult
 
 
 class ChatLocation(BaseModel):
-    lat: float
-    lng: float
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
 
 
 class ChatIn(BaseModel):
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=2000)
     session_id: int | None = None
     location: ChatLocation | None = None
-    timezone: str = "UTC"
+    timezone: str = Field(default="UTC", max_length=64)
 
 
 class ToolActionOut(BaseModel):

@@ -1,24 +1,25 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Booking — ParkSpot AI</title><meta name="theme-color" content="#16845B"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
+<title>Booking — ParkSpot AI</title><meta name="theme-color" content="#0B6E3D"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;800&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
 <body>
-<header class="topbar"><div class="topbar-inner"><a class="logo" href="/index.html">ParkSpot <em>AI</em></a>
+<header class="topbar"><div class="topbar-inner"><a class="logo" href="/index.html"><img src="/icon.svg" alt="" width="34" height="34">ParkSpot <em>AI</em></a>
 <nav aria-label="Primary" style="display:flex;gap:4px"><a class="navlink" href="/index.html">← Find parking</a><a class="navlink" href="/bookings.html">My bookings</a></nav></div></header>
 <main style="max-width:680px;margin:0 auto;padding:24px 16px 90px">
   <div id="root" class="card reveal" aria-live="polite"><p style="color:var(--ink-2)">Loading your booking…</p></div>
 </main>
 <nav class="mobile-nav" aria-label="Mobile navigation">
-  <a href="/index.html"><span aria-hidden="true">🅿️</span>Find</a>
+  <a href="/index.html"><span aria-hidden="true">🏠</span>Home</a>
+  <a href="/index.html#map"><span aria-hidden="true">🗺️</span>Map</a>
   <a href="/bookings.html"><span aria-hidden="true">🎫</span>Bookings</a>
-  <a href="/host.html"><span aria-hidden="true">🏢</span>Partner</a>
-  <a href="/bookings.html#profile"><span aria-hidden="true">👤</span>Account</a>
+  <a href="/host.html" class="mobile-ops" style="display:none"><span aria-hidden="true">🏢</span>Partner</a>
+  <a href="/bookings.html#profile"><span aria-hidden="true">👤</span>Profile</a>
 </nav>
 <script src="/js/pwa.js"></script>
-<script type="module">import {loadBooking,confirmBooking,cancelBooking} from "/js/booking.js";import {token} from "/js/api.js";import {toast} from "/js/ui.js";
+<script type="module">import {loadBooking,confirmBooking,cancelBooking} from "/js/booking.js";import {token} from "/js/api.js";import {toast,esc} from "/js/ui.js";
 const params=new URLSearchParams(location.search);const holdId=params.get("hold");const bookingId=params.get("id")||holdId;
 const root=document.getElementById("root");
-const PILL={held:["pill-hold","Held — awaiting payment"],confirmed:["pill-go","Confirmed"],active:["pill-go","Checked in"],completed:["pill-go","Completed"],cancelled:["pill-stop","Cancelled"],expired:["pill-stop","Hold expired"],no_show:["pill-stop","No-show"]};
+const PILL={held:["pill-hold","Held — awaiting confirmation"],confirmed:["pill-go","Confirmed"],active:["pill-go","Checked in"],completed:["pill-go","Completed"],cancelled:["pill-stop","Cancelled"],expired:["pill-stop","Hold expired"],no_show:["pill-stop","No-show"]};
 const money=v=>`$${Number(v).toFixed(2)}`;
 function breakdown(b){return `<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">
   <div style="display:flex;justify-content:space-between"><span style="color:var(--ink-2)">${money(b.base_price_per_hour)}/hr × ${b.hours} hrs</span><span class="mono">${money(b.base_price)}</span></div>
@@ -26,32 +27,33 @@ function breakdown(b){return `<div style="border-top:1px solid var(--border);mar
   <div style="display:flex;justify-content:space-between"><span style="color:var(--ink-2)">Platform fee</span><span class="mono">${money(b.platform_fee)}</span></div>
   <div style="display:flex;justify-content:space-between;font-weight:800;font-size:1.1rem;border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><span>Total</span><span class="mono">${money(b.total_price)}</span></div></div>`;}
 async function render(){
-  let b; try{ b=await loadBooking(bookingId); }catch(e){ root.innerHTML=`<h1>Booking unavailable</h1><p style="color:var(--ink-2)">${e.message}</p><a class="btn" href="/index.html">Back to search</a>`; return; }
+  let b; try{ b=await loadBooking(bookingId); }catch(e){ root.innerHTML=`<h1>Booking unavailable</h1><p style="color:var(--ink-2)">${esc(e.message)}</p><a class="btn" href="/index.html">Back to search</a>`; return; }
   const [cls,label]=PILL[b.status]||["pill-hold",b.status];
   const head=`<div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div>
     <h1 style="margin:0;font-size:1.5rem">${b.status==="held"?"Review & confirm":"Your parking pass"}</h1>
-    <p style="color:var(--ink-2);margin:4px 0">${b.spot.title} · ${b.spot.address}</p></div><span class="pill ${cls}">${label}</span></div>
+    <p style="color:var(--ink-2);margin:4px 0">${esc(b.spot.title)} · ${esc(b.spot.address)}</p></div><span class="pill ${cls}">${esc(label)}</span></div>
     <p class="mono" style="margin:10px 0 2px">${new Date(b.start_time).toLocaleString()} → ${new Date(b.end_time).toLocaleString()}</p>
-    <p style="margin:2px 0">Vehicle plate <span class="mono" style="font-weight:700">${b.vehicle_plate}</span></p>
-    ${b.spot.access_instructions?`<p style="background:var(--brand-soft);border:1px solid #BFE3D0;border-radius:10px;padding:10px 12px">Access: ${b.spot.access_instructions}</p>`:""}`;
+    <p style="margin:2px 0">Vehicle plate <span class="mono" style="font-weight:700">${esc(b.vehicle_plate)}</span></p>
+    ${b.spot.access_instructions?`<p style="background:var(--brand-soft);border:1px solid #BFE3D0;border-radius:10px;padding:10px 12px">Access: ${esc(b.spot.access_instructions)}</p>`:""}`;
   if(b.status==="held"){
     const mins=b.hold_expires_at?Math.max(0,Math.round((new Date(b.hold_expires_at)-Date.now())/60000)):0;
     root.innerHTML=head+breakdown(b)+`
       <p style="color:var(--warn);background:var(--warn-bg);border-radius:10px;padding:10px 12px">⏱ This spot is held for you for ${mins} more minute${mins===1?"":"s"}. Prices above are locked in.</p>
-      <p style="color:var(--ink-2);font-size:.9rem">Cancellation: free before arrival — cancel anytime from this page; a confirmed payment is refunded automatically on cancellation (mock payment provider in this deployment).</p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px"><button id="confirm" class="btn" style="flex:1">Confirm & pay ${money(b.total_price)}</button>
+      <p style="color:var(--ink-2);font-size:.9rem">Cancellation: free before arrival — cancel anytime from this page. <b>Demo deployment:</b> confirming records a reservation with the mock payment provider — no real card is charged. In production this step is where a real payment would be authorized before confirmation.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px"><button id="confirm" class="btn" style="flex:1">Confirm reservation · ${money(b.total_price)} (demo, no real charge)</button>
       <button id="cancel" class="btn btn-ghost">Cancel hold</button></div>`;
     const btn=document.getElementById("confirm");
-    btn.onclick=async()=>{btn.disabled=true;btn.textContent="Processing payment…";
+    btn.onclick=async()=>{btn.disabled=true;btn.textContent="Confirming…";
       try{await confirmBooking(b.id);toast("Booking confirmed");location.href=`/booking.html?id=${b.id}`;}
-      catch(e){btn.disabled=false;btn.textContent=`Confirm & pay ${money(b.total_price)}`;toast(e.message,false);render();}};
+      catch(e){btn.disabled=false;btn.textContent=`Confirm reservation · ${money(b.total_price)} (demo, no real charge)`;toast(e.message,false);render();}};
     document.getElementById("cancel").onclick=async()=>{await cancelBooking(b.id);toast("Hold cancelled");setTimeout(()=>location.href="/index.html",500);};
     return;
   }
-  root.innerHTML=head+breakdown(b)+`
+  const qrBlock=["confirmed","active"].includes(b.status)?`
     <div style="display:grid;place-items:center;padding:16px 0 4px">
       <div style="background:#fff;border:1px solid var(--border);padding:14px;border-radius:16px;box-shadow:var(--shadow)"><img id="qr" alt="QR access pass" style="width:210px;height:210px;display:block"></div>
-      <p style="color:var(--ink-3);font-size:.78rem" class="mono">QR ACCESS PASS · PLATE-RECOGNISED ENTRY ALSO ENABLED</p></div>
+      <p style="color:var(--ink-3);font-size:.78rem" class="mono">QR ACCESS PASS — SINGLE CHECK-IN, VALIDATED ON THE SERVER · KEEP IT PRIVATE</p></div>`:"";
+  root.innerHTML=head+breakdown(b)+qrBlock+`
     <div style="display:flex;gap:10px;flex-wrap:wrap"><a class="btn" target="_blank" rel="noopener" href="${b.navigation.google_maps_url}">Navigate · Google Maps</a>
     <a class="btn btn-ghost" target="_blank" rel="noopener" href="${b.navigation.apple_maps_url}">Apple Maps</a></div>
     <div style="display:flex;gap:10px;margin-top:14px"><a class="btn btn-ghost" href="/index.html">← Back to search</a>

@@ -91,6 +91,9 @@ class SpotDetailOut(SpotOut):
     host_name: str = ""
     availability_windows: list[AvailabilityWindowOut] = []
     camera_id: str | None = None
+    # Availability for the requested window (only when start/end supplied).
+    spaces_available: int | None = None
+    is_available: bool | None = None
 
 
 class HostSpotOut(SpotOut):

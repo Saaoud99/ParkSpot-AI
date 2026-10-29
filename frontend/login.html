@@ -1,15 +1,16 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Login — ParkSpot AI</title><meta name="theme-color" content="#16845B"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
+<title>Login — ParkSpot AI</title><meta name="theme-color" content="#0B6E3D"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;800&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@600&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script><link href="/css/app.css" rel="stylesheet"></head>
 <body style="display:grid;place-items:center;padding:24px 16px;min-height:100dvh">
 <main class="card reveal" style="max-width:420px;width:100%;padding:32px">
   <a href="/index.html" class="btn btn-ghost" style="min-height:40px;padding:8px 14px;margin-bottom:18px">← Back to home</a><br>
-  <a class="logo" href="/index.html" style="font-size:1.5rem">ParkSpot <em>AI</em></a>
+  <div style="text-align:center"><a class="logo" href="/index.html" style="font-size:1.5rem;flex-direction:column;gap:10px"><img src="/icon.svg" alt="ParkSpot AI logo" width="64" height="64" style="width:64px;height:64px;border-radius:18px">ParkSpot <em>AI</em></a>
+  <p class="tagline">Smarter parking, easier journeys</p></div>
   <h1 style="font-size:1.35rem;margin:16px 0 4px">Welcome back</h1><p style="color:var(--ink-2);margin-top:0">Log in to book, manage trips, or access partner operations.</p>
   <p id="notice" style="display:none;color:var(--warn);background:var(--warn-bg);border-radius:10px;padding:10px 12px">Your session has expired — please log in again to continue.</p>
   <form id="f"><label for="email">Email</label><input id="email" type="email" required autocomplete="email" placeholder="you@example.com" style="margin:6px 0 12px">
-  <label for="password">Password</label><input id="password" type="password" required autocomplete="current-password" placeholder="Your password" style="margin:6px 0 16px">
+  <label for="password">Password</label><div style="display:flex;gap:8px;margin:6px 0 16px"><input id="password" type="password" required autocomplete="current-password" placeholder="Your password" style="margin:0"><button id="togglepw" type="button" class="btn btn-ghost" aria-label="Show password" aria-pressed="false">Show</button></div>
   <button id="go" class="btn" style="width:100%">Log in</button><p id="msg" role="alert"></p></form>
   <p>No account? <a id="reglink" href="/register.html">Create one</a></p>
   <div style="background:var(--surface-2);border:1px solid var(--border);padding:12px;border-radius:10px;font-size:.85rem;color:var(--ink-2)">Demo logins<br><span class="mono">driver@demo.test / demo1234</span><br><span class="mono">host@demo.test / demo1234</span> (partner ops)</div>
@@ -17,6 +18,8 @@
 <script src="/js/pwa.js"></script>
 <script type="module">import {api} from "/js/api.js";import {saveTokens,safeNext} from "/js/auth.js";
 const params=new URLSearchParams(location.search);
+const pw=document.getElementById("password"),tp=document.getElementById("togglepw");
+tp.onclick=()=>{const show=pw.type==="password";pw.type=show?"text":"password";tp.textContent=show?"Hide":"Show";tp.setAttribute("aria-pressed",String(show));tp.setAttribute("aria-label",show?"Hide password":"Show password");pw.focus();};
 if(params.get("reason")==="expired")document.getElementById("notice").style.display="block";
 if(params.get("next"))document.getElementById("reglink").href=`/register.html?next=${encodeURIComponent(params.get("next"))}`;
 document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const go=document.getElementById("go");go.disabled=true;go.textContent="Logging in…";

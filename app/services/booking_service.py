@@ -45,7 +45,24 @@ async def _refresh_spot_status(db: AsyncSession, spot_id: int) -> None:
     spot.status = SpotStatus.held if covering else SpotStatus.available
 
 
+_hold_locks: dict[int, asyncio.Lock] = {}
+
+
+def _spot_lock(spot_id: int) -> asyncio.Lock:
+    return _hold_locks.setdefault(spot_id, asyncio.Lock())
+
+
 async def hold(db: AsyncSession, user: User, data: HoldIn) -> Booking:
+    # Serialize hold creation per facility within this process so the
+    # check → insert → recount sequence cannot interleave with a competing
+    # hold and oversell authorized capacity on the single-process/SQLite
+    # deployment. (Multi-process production needs the same guard as a
+    # database row lock on the facility row — Postgres SELECT … FOR UPDATE.)
+    async with _spot_lock(data.spot_id):
+        return await _hold_locked(db, user, data)
+
+
+async def _hold_locked(db: AsyncSession, user: User, data: HoldIn) -> Booking:
     start, end = validate_window(data.start, data.end)
     spot = await spot_repo.get(db, data.spot_id)
     if spot is None:
@@ -121,6 +138,9 @@ async def cancel(db: AsyncSession, user: User, booking_id: int) -> Booking:
         await payment_service.refund(db, booking)
     booking.status = BookingStatus.cancelled
     booking.cancelled_at = utcnow()
+    # Revoke the access pass immediately: a cancelled booking's QR must
+    # never open a gate, even inside its original validity window.
+    booking.qr_token = None
     spot = await spot_repo.get(db, booking.spot_id)
     if spot and spot.status == SpotStatus.held:
         spot.status = SpotStatus.available
@@ -147,7 +167,10 @@ def serialize(booking: Booking, user: User) -> dict:
     data = BookingOut.model_validate(booking).model_dump()
     data["spot"] = booking.spot
     data["qr_url"] = f"/api/v1/bookings/{booking.id}/qr" if is_owner and booking.qr_token else None
-    data["qr_token"] = booking.qr_token if is_owner else None
+    # Never return the raw access-pass token in JSON: the QR *image* is
+    # fetched from qr_url with the driver's auth, so the bearer-like pass
+    # token itself doesn't need to leak into API payloads / logs.
+    data["qr_token"] = None
     data["navigation"] = build_navigation(booking.spot) if booking.spot else None
     return data
 

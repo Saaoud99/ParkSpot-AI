@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11,6 +11,20 @@ from app.db.models.booking import ACTIVE_STATUSES, Booking
 from app.db.models.enums import BookingStatus
 from app.db.models.spot import AvailabilityWindow, ParkingSpot
 from app.utils.geo import bbox_for_radius
+from app.utils.timeutil import utcnow
+
+
+def _live_overlap(start: datetime, end: datetime):  # type: ignore[no-untyped-def]
+    """Overlapping reservations that still claim capacity.
+
+    A hold whose TTL has passed claims nothing even before the expiry job
+    flips its status, so it must not block (or consume) authorized capacity.
+    """
+    now = utcnow()
+    return and_(
+        Booking.start_time < end, Booking.end_time > start,
+        or_(Booking.status != BookingStatus.held, Booking.hold_expires_at.is_(None), Booking.hold_expires_at > now),
+    )
 
 
 async def get(db: AsyncSession, spot_id: int) -> ParkingSpot | None:
@@ -41,8 +55,7 @@ async def search_candidates(db: AsyncSession, lat: float, lng: float, radius_km:
 
 async def overlapping_booking(db: AsyncSession, spot_id: int, start: datetime, end: datetime) -> Booking | None:
     stmt = select(Booking).where(
-        Booking.spot_id == spot_id, Booking.status.in_(ACTIVE_STATUSES),
-        Booking.start_time < end, Booking.end_time > start)
+        Booking.spot_id == spot_id, Booking.status.in_(ACTIVE_STATUSES), _live_overlap(start, end))
     return (await db.execute(stmt)).scalars().first()
 
 
@@ -50,8 +63,7 @@ async def overlapping_count(db: AsyncSession, spot_id: int, start: datetime, end
     """Reservations (held/confirmed/active) overlapping the interval — the
     number of ParkSpot-authorized spaces already taken for that window."""
     stmt = select(func.count(Booking.id)).where(
-        Booking.spot_id == spot_id, Booking.status.in_(ACTIVE_STATUSES),
-        Booking.start_time < end, Booking.end_time > start)
+        Booking.spot_id == spot_id, Booking.status.in_(ACTIVE_STATUSES), _live_overlap(start, end))
     return (await db.execute(stmt)).scalar_one()
 
 

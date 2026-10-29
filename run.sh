@@ -20,4 +20,9 @@ echo "Seeding demo data (idempotent)…"
 .venv/bin/python -m scripts.seed
 
 echo "Starting ParkSpot AI on http://localhost:${PORT:-8000}  (Ctrl+C to stop)"
+# The server binds 0.0.0.0 so other devices on the same network can reach
+# it. On a phone, open the machine's LAN address — NOT 127.0.0.1, which on
+# the phone means the phone itself ("127.0.0.1 refused to connect").
+LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -n "$LAN_IP" ] && echo "On your phone (same Wi-Fi): http://${LAN_IP}:${PORT:-8000}"
 exec .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"

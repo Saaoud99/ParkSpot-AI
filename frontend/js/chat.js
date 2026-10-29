@@ -30,9 +30,13 @@ export function initVoice(buttonId, inputId, statusId) {
 export function initChat(logId, inputId, sendId, onBook) {
   const log = document.getElementById(logId), input = document.getElementById(inputId);
   function bubble(text, who) { const d = document.createElement("div"); d.className = `msg ${who}`; d.textContent = text; log.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
-  bubble("Hi! I can find real, available parking from live listings. Try: “covered parking near downtown tomorrow 9am for 2 hours under $10”. I never invent spots or prices — everything comes from the listings.", "msg-bot");
+  bubble("Hi! I can search ParkSpot's live, authorized listings. Try: “covered parking near downtown tomorrow 9am for 2 hours under $10”. I never invent spots or prices — everything comes from the live listings, and holds/confirms always run through the server.", "msg-bot");
+  let sending = false;
   async function send(textOverride) {
+    if (sending) return;
     const text = (textOverride ?? input.value).trim(); if (!text) return; input.value = "";
+    sending = true;
+    const sendBtn = document.getElementById(sendId); if (sendBtn) sendBtn.disabled = true;
     bubble(text, "msg-user");
     const typing = bubble("", "msg-bot"); typing.innerHTML = `<span class="typing" aria-label="Assistant is thinking"><i></i><i></i><i></i></span>`;
     try {
@@ -55,6 +59,9 @@ export function initChat(logId, inputId, sendId, onBook) {
       typing.remove();
       const d = bubble(`Something went wrong: ${e.message}.`, "msg-bot");
       const r = document.createElement("button"); r.className = "chip"; r.textContent = "↻ Retry"; r.onclick = () => send(text); d.appendChild(document.createElement("br")); d.appendChild(r);
+    } finally {
+      sending = false;
+      const sendBtn = document.getElementById(sendId); if (sendBtn) sendBtn.disabled = false;
     }
     log.scrollTop = log.scrollHeight;
   }

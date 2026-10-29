@@ -3,7 +3,7 @@
 :root{
   color-scheme:light;
   --bg:#F7F8F6; --surface:#FFFFFF; --surface-2:#FBFCFB;
-  --brand:#16845B; --brand-dark:#116747; --brand-soft:#E8F5ED;
+  --brand:#16845B; --brand-dark:#116747; --brand-soft:#E8F5ED; --brand-deep:#0B6E3D;
   --ink:#202923; --ink-2:#68736C; --ink-3:#8A948C;
   --border:#E5EAE6; --border-strong:#D4DDD6;
   --error:#B3261E; --error-bg:#FDECEA;
@@ -59,8 +59,23 @@ label{font-size:.8rem;color:var(--ink-2);font-weight:600;letter-spacing:.02em}
 /* Header */
 .topbar{position:sticky;top:0;z-index:40;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
 .topbar-inner{max-width:1240px;margin:0 auto;padding:12px 20px;display:flex;gap:18px;align-items:center}
-.logo{font-family:var(--display);font-weight:800;font-size:1.2rem;color:var(--ink);text-decoration:none}
+.logo{font-family:var(--display);font-weight:800;font-size:1.2rem;color:var(--ink);text-decoration:none;display:inline-flex;align-items:center;gap:9px}
+.logo img{width:34px;height:34px;border-radius:9px;flex:0 0 auto}
 .logo em{font-style:normal;color:var(--brand)}
+.tagline{color:var(--ink-2);font-size:.85rem;margin:2px 0 0}
+/* Splash — brief branded entry on the home page only; never blocks use. */
+#splash{position:fixed;inset:0;z-index:100;display:grid;place-items:center;background:var(--bg);transition:opacity .35s var(--ease)}
+#splash.hide{opacity:0;pointer-events:none}
+#splash .splash-inner{text-align:center;animation:rise .45s var(--ease) both}
+#splash img{width:84px;height:84px;border-radius:22px;box-shadow:var(--shadow-lift)}
+#splash .splash-name{font-family:var(--display);font-weight:800;font-size:1.6rem;margin-top:14px}
+#splash .splash-name em{font-style:normal;color:var(--brand)}
+/* Facility cards: photo rail + content, matching the reference list layout. */
+@media (min-width:560px){
+  .spot-card{display:grid;grid-template-columns:118px 1fr;gap:14px}
+  .spot-card .facility-photo{margin:0;min-height:100%}
+  .spot-card .spot-card-actions{grid-column:1/-1}
+}
 .navlink{color:var(--ink-2);text-decoration:none;font-weight:600;padding:8px 6px;border-radius:8px}
 .navlink:hover,.navlink[aria-current]{color:var(--brand-dark);background:var(--brand-soft)}
 
@@ -100,6 +115,8 @@ label{font-size:.8rem;color:var(--ink-2);font-weight:600;letter-spacing:.02em}
 .bar-row{display:grid;grid-template-columns:110px 1fr 34px;gap:10px;align-items:center;font-size:.85rem}
 .bar-track{height:10px;border-radius:99px;background:#EDF1EE;overflow:hidden}
 .bar-fill{height:100%;border-radius:99px;background:var(--brand);transition:width .7s var(--ease)}
+.facility-photo{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:96px;margin:-6px -6px 14px;border-radius:12px;background:repeating-linear-gradient(0deg,transparent 0 23px,rgba(32,41,35,.04) 23px 24px),repeating-linear-gradient(90deg,transparent 0 23px,rgba(32,41,35,.04) 23px 24px),var(--brand-soft);color:var(--ink-2);font-size:1.7rem}
+.facility-photo small{font-size:.72rem;font-weight:600;letter-spacing:.02em}
 .viewtoggle{display:none}
 /* Bottom tab bar — mobile app navigation (hidden on desktop, top nav takes over) */
 .mobile-nav{display:none}

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.exceptions import ForbiddenError, NotFoundError
+from app.core.ratelimit import check_rate_limit
 from app.db.models.enums import ChatRole
 from app.db.models.user import User
 from app.db.session import get_db
@@ -16,7 +17,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(data: ChatIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def chat(data: ChatIn, request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    check_rate_limit(request, "chat", limit=30, window_seconds=60, identity=str(user.id))
     return await chat_service.handle_message(db, user, data)
 
 

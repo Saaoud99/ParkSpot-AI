@@ -45,9 +45,18 @@ async def list_for_host(db: AsyncSession, host_id: int, spot_id: int | None, lim
 
 
 async def find_by_plate_window(db: AsyncSession, spot_id: int, plate: str, at: datetime) -> Booking | None:
+    # Same arrival-grace window the QR pass enforces, so plate and QR entry
+    # follow identical access rules for a booking.
+    from datetime import timedelta
+
+    from app.core.config import get_settings
+
+    grace = timedelta(minutes=get_settings().ARRIVAL_GRACE_MINUTES)
     rows = (await db.execute(select(Booking).where(
-        Booking.spot_id == spot_id, Booking.status.in_((BookingStatus.confirmed, BookingStatus.active)),
-        Booking.start_time <= at, Booking.end_time >= at).order_by(Booking.start_time))).scalars().all()
+        Booking.spot_id == spot_id, Booking.status.in_((BookingStatus.confirmed, BookingStatus.active))).order_by(Booking.start_time))).scalars().all()
+    from app.utils.timeutil import to_utc
+
+    rows = [b for b in rows if to_utc(b.start_time) - grace <= at <= to_utc(b.end_time) + grace]
     from app.vision.plates import plates_match
 
     for b in rows:

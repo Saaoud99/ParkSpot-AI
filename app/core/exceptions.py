@@ -52,6 +52,11 @@ class UpstreamError(AppError):
     code = "upstream_error"
 
 
+class RateLimitError(AppError):
+    status_code = 429
+    code = "rate_limited"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(request: Request, exc: AppError) -> JSONResponse:
@@ -59,7 +64,10 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
-        return JSONResponse(status_code=422, content={"detail": exc.errors(), "code": "validation_error"})
+        # Never echo submitted values back: pydantic's default errors include
+        # the raw `input`, which for auth forms would reflect passwords.
+        safe = [{"loc": [str(p) for p in e.get("loc", ())], "msg": e.get("msg", "invalid value"), "type": e.get("type", "value_error")} for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": safe, "code": "validation_error"})
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

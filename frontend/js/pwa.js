@@ -2,6 +2,19 @@
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }
+// Reveal partner-operations navigation only for roles that can use it.
+// (Supplementary UX only — the backend enforces authorization regardless.)
+(function () {
+  const t = localStorage.getItem("access_token");
+  if (!t) return;
+  fetch("/api/v1/auth/me", { headers: { Authorization: `Bearer ${t}` } })
+    .then(r => (r.ok ? r.json() : null))
+    .then(me => {
+      if (me && (me.role === "host" || me.role === "admin"))
+        document.querySelectorAll(".mobile-ops").forEach(a => (a.style.display = ""));
+    })
+    .catch(() => {});
+})();
 window.addEventListener("offline", () => {
   const b = document.createElement("div");
   b.id = "offline-bar";

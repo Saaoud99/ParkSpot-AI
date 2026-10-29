@@ -4,8 +4,10 @@ import functools
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_INSECURE_DEFAULT_SECRET = "dev-secret-key-change-me-please-32chars!!"
 
 
 class Settings(BaseSettings):
@@ -48,6 +50,11 @@ class Settings(BaseSettings):
     EASYOCR_LANGS: list[str] = ["en"]
     DEPARTURE_EMPTY_FRAMES: int = 2
     CAMERA_SHARED_KEY: str = ""
+    # Minimum OCR confidence for an automatic plate-based entry grant.
+    # Below this the observation is logged and denied (driver can use QR).
+    PLATE_CONFIDENCE_MIN: float = 0.50
+    # Hard cap on camera frame uploads (bytes) to bound vision resource use.
+    VISION_MAX_UPLOAD_BYTES: int = 5_242_880
 
     @field_validator("SECRET_KEY")
     @classmethod
@@ -55,6 +62,17 @@ class Settings(BaseSettings):
         if len(v) < 32:
             raise ValueError("SECRET_KEY must be at least 32 characters")
         return v
+
+    @model_validator(mode="after")
+    def _prod_hardening(self) -> "Settings":
+        # Fail closed in production: the bundled dev secret and debug mode
+        # must never reach a real deployment.
+        if self.ENV == "prod":
+            if self.SECRET_KEY == _INSECURE_DEFAULT_SECRET:
+                raise ValueError("SECRET_KEY must be set to a unique secret in prod")
+            if self.DEBUG:
+                raise ValueError("DEBUG must be false in prod")
+        return self
 
 
 @functools.lru_cache

@@ -27,7 +27,7 @@ router = APIRouter(prefix="/spots", tags=["spots"])
 
 
 @router.get("/geocode")
-async def geocode(q: str = Query(..., min_length=1), lat: float | None = None, lng: float | None = None):
+async def geocode(q: str = Query(..., min_length=1, max_length=120), lat: float | None = Query(None, ge=-90, le=90), lng: float | None = Query(None, ge=-180, le=180)):
     """Resolve a destination name to coordinates (Mapbox, landmark fallback). Additive endpoint for the discovery UI."""
     proximity = (lat, lng) if lat is not None and lng is not None else None
     return await geocode_service.geocode(q, proximity)
@@ -35,7 +35,7 @@ async def geocode(q: str = Query(..., min_length=1), lat: float | None = None, l
 
 @router.get("/search", response_model=list[SpotSearchResult])
 async def search_spots(
-    lat: float = Query(...), lng: float = Query(...), radius_km: float = Query(2, le=25),
+    lat: float = Query(..., ge=-90, le=90), lng: float = Query(..., ge=-180, le=180), radius_km: float = Query(2, gt=0, le=25),
     start: str | None = None, end: str | None = None, covered: bool | None = None, ev: bool | None = None,
     spot_type: str | None = None, max_price_per_hour: Decimal | None = None, limit: int = Query(20, le=50),
     db: AsyncSession = Depends(get_db), user: User | None = Depends(get_optional_user),
@@ -52,10 +52,15 @@ async def my_spots(user: User = Depends(require_role(UserRole.host)), db: AsyncS
 
 
 @router.get("/{spot_id}", response_model=SpotDetailOut)
-async def get_spot(spot_id: int, db: AsyncSession = Depends(get_db)):
+async def get_spot(spot_id: int, start: str | None = None, end: str | None = None, db: AsyncSession = Depends(get_db)):
     spot = await spot_service.get_spot(db, spot_id)
     data = spot_service._spot_dict(spot)
-    return {**data, "host_name": spot.host.full_name if spot.host else "", "availability_windows": spot.availability_windows, "camera_id": spot.camera.id if spot.camera else None}
+    extra: dict = {"host_name": spot.host.full_name if spot.host else "", "availability_windows": spot.availability_windows, "camera_id": spot.camera.id if spot.camera else None}
+    if start and end:
+        s_dt, e_dt = parse_iso(start), parse_iso(end)
+        extra["spaces_available"] = await spot_service.spaces_available(db, spot, s_dt, e_dt)
+        extra["is_available"] = await spot_service.is_available(db, spot, s_dt, e_dt)
+    return {**data, **extra}
 
 
 @router.post("", response_model=SpotOut, status_code=201)

@@ -39,6 +39,18 @@ async def handle_message(db: AsyncSession, user: User, data: ChatIn) -> dict:
     ctx = ToolContext(db=db, user=user, settings=settings, now=utcnow(), timezone=data.timezone or "UTC",
                       location=(data.location.lat, data.location.lng) if data.location else None)
     degraded = False
+    if not settings.LLAMA_API_KEY:
+        # No provider configured: say so immediately and honestly instead
+        # of firing a doomed request and dressing the fallback up as AI.
+        degraded = True
+        reply = (
+            "The AI assistant isn't configured on this deployment (no Llama provider key), "
+            "so I can't search by chat right now. Use the destination search and filters on the "
+            "home page — they query the same live ParkSpot inventory."
+        )
+        await chat_repo.add_message(db, session.id, ChatRole.assistant, reply)
+        await db.commit()
+        return {"session_id": session.id, "reply": reply, "actions": [], "spots": None, "booking": None, "degraded": True}
     try:
         result = await run_booking_agent(data.message, ctx, session)
         reply, actions, spots, booking = result.reply, result.actions, result.spots, result.booking
