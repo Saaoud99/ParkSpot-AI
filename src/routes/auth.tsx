@@ -81,7 +81,7 @@ function AuthPage() {
         <img src={garage} alt="" className="h-full w-full object-cover" />
         <div className="absolute inset-0 bg-fade" />
       </div>
-      <div className="-mt-12 flex-1 rounded-t-[2rem] bg-background px-6 pb-8 pt-6">
+      <div className="app-scroll -mt-12 min-h-0 flex-1 rounded-t-[2rem] bg-background px-6 pb-8 pt-6">
         <img src={logo} alt="ParkSpot AI" width={48} height={48} className="h-12 w-12 object-contain" />
         <h1 className="mt-3 font-display text-3xl font-semibold">{mode === "in" ? t("signIn") : t("signUp")}</h1>
         <p className="text-sm text-muted-foreground">{t("tagline")}</p>

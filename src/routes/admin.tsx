@@ -656,7 +656,7 @@ function AdminPage() {
               <LogOut className="h-4 w-4" />{t("logout")}
             </button>
           </div>
-          <nav className="mb-4 flex gap-2 overflow-x-auto pb-1 lg:hidden">
+          <nav className="no-scrollbar mb-4 flex gap-2 overflow-x-auto pb-1 lg:hidden">
             {SECTIONS.map((s) => (
               <button key={s.id} onClick={() => setSection(s.id)}
                 className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium ${section === s.id ? "border-primary bg-primary text-primary-foreground" : "bg-card"}`}>

@@ -20,7 +20,9 @@ function MapPage() {
   const chosen = data.find((f) => f.id === sel);
   return (
     <AppShell title={t("map")}>
-      <div className="relative h-[calc(100vh-140px)] md:h-[700px]">
+      {/* Fill the shell's scroll area exactly — no page scroll on this
+          screen, the map itself handles pan/zoom. */}
+      <div className="relative h-full min-h-0 w-full overflow-hidden">
         <ClientOnly fallback={<div className="h-full animate-pulse bg-secondary" />}>
           <Suspense fallback={<div className="h-full animate-pulse bg-secondary" />}>
             {data.length > 0 && <ParkingMap facilities={data} onSelect={onSelect} />}
@@ -28,7 +30,7 @@ function MapPage() {
         </ClientOnly>
         <div className="absolute inset-x-4 bottom-4 z-[500]">
           {chosen ? <FacilityCard f={chosen} compact /> : (
-            <div className="flex gap-3 overflow-x-auto">
+            <div className="no-scrollbar flex gap-3 overflow-x-auto">
               {data.map((f) => <div key={f.id} className="w-64 shrink-0"><FacilityCard f={f} compact /></div>)}
             </div>
           )}

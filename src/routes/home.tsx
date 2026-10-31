@@ -175,14 +175,14 @@ function HomePage() {
         </Link>
       </div>
       {!coords && (
-        <div className="mt-6 flex gap-2 overflow-x-auto px-5 pb-1">
+        <div className="no-scrollbar mt-6 flex gap-2 overflow-x-auto px-5 pb-1">
           {cities.map((c) => (
             <button key={c} onClick={() => setCity(c)} className={`shrink-0 rounded-full border px-4 py-1.5 text-sm font-medium ${city === c ? "border-primary bg-primary text-primary-foreground" : "bg-card"}`}>{c}</button>
           ))}
         </div>
       )}
       <h2 className="mt-5 px-5 font-display text-xl font-semibold">{coords ? t("nearYourLocation") : t("nearby")}</h2>
-      <div className="mt-3 space-y-4 px-5">
+      <div className="mt-3 space-y-4 px-5 pb-6">
         {isLoading && [0, 1].map((i) => <div key={i} className="h-60 animate-pulse rounded-3xl bg-card" />)}
         {coords && !isLoading && list.length === 0 && (
           <div className="rounded-3xl border bg-card p-4 text-center shadow-soft">

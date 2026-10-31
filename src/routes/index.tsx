@@ -67,7 +67,7 @@ function Splash() {
           <button onClick={() => finish("/home")} className="rounded-full bg-card/90 px-3 py-1 text-xs font-semibold">{t("skip")}</button>
         </div>
       </div>
-      <div className="-mt-8 flex flex-1 flex-col rounded-t-[2rem] bg-background px-6 pb-8 pt-7">
+      <div className="app-scroll -mt-8 flex min-h-0 flex-1 flex-col rounded-t-[2rem] bg-background px-6 pb-8 pt-7">
         <div className="flex gap-1.5">
           {slides.map((_, i) => <span key={i} className={`h-1.5 rounded-full transition-all ${i === step ? "w-8 bg-primary" : "w-3 bg-border"}`} />)}
         </div>

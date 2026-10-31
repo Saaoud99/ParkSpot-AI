@@ -42,7 +42,7 @@ function FacilityPage() {
           {f.features.map((k) => { const I = featIcon[k] ?? Shield; return <span key={k} className="flex items-center gap-1.5 rounded-full border bg-card px-3 py-1.5 text-sm"><I className="h-4 w-4 text-primary" />{featLabel[k] ?? k}</span>; })}
         </div>
         <p className="mt-6 text-xs text-muted-foreground">{t("refundPolicy")}</p>
-        <div className="sticky bottom-24 mt-6 pb-4">
+        <div className="sticky bottom-4 mt-6 pb-4">
           {f.available > 0 ? (
             <Link to="/book/$id" params={{ id: f.id }} className="flex h-12 w-full items-center justify-center rounded-full bg-primary font-semibold text-primary-foreground shadow-lift">{t("book")}</Link>
           ) : (
