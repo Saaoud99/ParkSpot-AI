@@ -1,0 +1,3 @@
+# Optional vision extras — heavy (torch). Install only on the machine that
+# runs EasyOCR plate reading:  pip install -r requirements-vision.txt
+easyocr>=1.7.1

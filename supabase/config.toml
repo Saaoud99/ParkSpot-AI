@@ -1,1 +1,8 @@
-project_id = "hgtdrkjptgjoempgumjj"
+project_id = "aeptcbtlplnrvrxjpxre"
+
+# No email validation: accounts are confirmed automatically and users are
+# signed in immediately after sign-up (mailer_autoconfirm = true remotely).
+# On the hosted project this mirrors Authentication → Providers → Email →
+# "Confirm email" being OFF. Keep it that way — the app flow depends on it.
+[auth.email]
+enable_confirmations = false
