@@ -12,7 +12,7 @@ import httpx
 from .config import Settings
 from .errors import NotConfigured, ProviderUnavailable
 
-FACILITY_FIELDS = "id,name,name_ar,city,address,lat,lng,price_per_hour_cents,available,capacity,features,rating,open_24h"
+FACILITY_FIELDS = "id,name,name_ar,city,address,lat,lng,price_per_hour_cents,available,capacity,authorized_capacity,total_capacity,active,features,rating,open_24h"
 
 
 class Inventory:
@@ -44,6 +44,11 @@ class Inventory:
         data = r.json()
         return data if isinstance(data, list) else []
 
+    @staticmethod
+    def _bookable(rows: list[dict]) -> list[dict]:
+        """Only facilities an admin has not deactivated are bookable inventory."""
+        return [r for r in rows if r.get("active", True) is not False]
+
     async def search_facilities(self, *, city: str | None = None, feature: str | None = None,
                                 max_price_cents: int | None = None, min_available: int = 1,
                                 limit: int = 6, user_jwt: str | None = None) -> list[dict]:
@@ -55,17 +60,17 @@ class Inventory:
             params["features"] = f"cs.{{{feature}}}"
         if max_price_cents is not None:
             params["price_per_hour_cents"] = f"lte.{max_price_cents}"
-        return await self._get("/rest/v1/facilities", params, user_jwt)
+        return self._bookable(await self._get("/rest/v1/facilities", params, user_jwt))
 
     async def get_facility(self, facility_id: str, user_jwt: str | None = None) -> dict | None:
-        rows = await self._get("/rest/v1/facilities",
-                               {"select": FACILITY_FIELDS, "id": f"eq.{facility_id}", "limit": "1"}, user_jwt)
+        rows = self._bookable(await self._get("/rest/v1/facilities",
+                               {"select": FACILITY_FIELDS, "id": f"eq.{facility_id}", "limit": "1"}, user_jwt))
         return rows[0] if rows else None
 
     async def all_facilities(self, user_jwt: str | None = None) -> list[dict]:
         """All contracted facilities with coordinates (for GPS distance ranking)."""
-        return await self._get("/rest/v1/facilities",
-                               {"select": FACILITY_FIELDS, "order": "rating.desc", "limit": "200"}, user_jwt)
+        return self._bookable(await self._get("/rest/v1/facilities",
+                               {"select": FACILITY_FIELDS, "order": "rating.desc", "limit": "200"}, user_jwt))
 
     async def insert(self, table: str, row: dict, user_jwt: str) -> bool:
         """Best-effort insert (e.g. camera events). Returns False on any failure."""

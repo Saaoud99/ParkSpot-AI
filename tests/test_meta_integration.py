@@ -6,7 +6,9 @@ claims a live integration. Run:  pytest tests/test_meta_integration.py -q
 """
 from __future__ import annotations
 
+import io
 import json
+import wave
 
 import httpx
 import pytest
@@ -20,7 +22,6 @@ from app.meta.services.muse_voice import MuseVoiceService
 from app.meta.services.sam_vision import SamVisionService
 from app.meta.tools import ToolExecutor
 
-pytestmark = pytest.mark.asyncio
 
 FACILITY = {
     "id": "11111111-1111-1111-1111-111111111111", "name": "Casa Marina Parking",
@@ -58,6 +59,7 @@ def chat_response(content=None, tool_calls=None):
 
 # ---------------------------------------------------------------- Muse Spark
 
+@pytest.mark.asyncio
 async def test_muse_not_configured_without_env():
     svc = MuseSparkService(Settings())
     with pytest.raises(NotConfigured):
@@ -69,6 +71,7 @@ def configured(handler, **over):
     return MuseSparkService(s, transport=transport(handler))
 
 
+@pytest.mark.asyncio
 async def test_muse_tool_call_returns_only_real_facilities():
     calls = {"n": 0}
 
@@ -89,12 +92,14 @@ async def test_muse_tool_call_returns_only_real_facilities():
     assert out["facilities"][0]["price_mad_per_hour"] == 12.0  # from cents, server-side
 
 
+@pytest.mark.asyncio
 async def test_muse_provider_401_is_honest_error():
     svc = configured(lambda req: httpx.Response(401, json={}))
     with pytest.raises(ProviderUnavailable):
         await svc.ask(messages=[{"role": "user", "content": "hi"}], executor=ToolExecutor(FakeInventory(), "jwt"))
 
 
+@pytest.mark.asyncio
 async def test_muse_timeout_retries_then_reports():
     def slow(req: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("slow", request=req)
@@ -108,6 +113,7 @@ async def test_muse_timeout_retries_then_reports():
 
 # ---------------------------------------------------------------------- tools
 
+@pytest.mark.asyncio
 async def test_tool_rejects_unknown_city_and_feature():
     ex = ToolExecutor(FakeInventory(), "jwt")
     with pytest.raises(ValidationFailed):
@@ -116,6 +122,7 @@ async def test_tool_rejects_unknown_city_and_feature():
         await ex.execute("search_facilities", {"feature": "helicopter_pad"})
 
 
+@pytest.mark.asyncio
 async def test_tool_rejects_unknown_tool_and_bad_hours():
     ex = ToolExecutor(FakeInventory(), "jwt")
     with pytest.raises(ValidationFailed):
@@ -124,6 +131,7 @@ async def test_tool_rejects_unknown_tool_and_bad_hours():
         await ex.execute("calculate_booking_quote", {"facility_id": FACILITY["id"], "hours": 999})
 
 
+@pytest.mark.asyncio
 async def test_quote_is_server_side_cents_math():
     ex = ToolExecutor(FakeInventory(), "jwt")
     out = await ex.execute("calculate_booking_quote", {"facility_id": FACILITY["id"], "hours": 3})
@@ -131,11 +139,13 @@ async def test_quote_is_server_side_cents_math():
     assert quote_cents(FACILITY, 3) == 3600
 
 
+@pytest.mark.asyncio
 async def test_unknown_facility_is_found_false_not_invented():
     ex = ToolExecutor(FakeInventory(), "jwt")
     assert await ex.execute("get_facility_details", {"facility_id": "99999999-9999-9999-9999-999999999999"}) == {"found": False}
 
 
+@pytest.mark.asyncio
 async def test_nearby_tool_needs_shared_location_and_uses_real_coords():
     rows = [{**FACILITY, "id": "near-1", "lat": 33.5800, "lng": -7.5900},
             {**FACILITY, "id": "far-1", "lat": 34.0209, "lng": -6.8416}]
@@ -150,11 +160,13 @@ async def test_nearby_tool_needs_shared_location_and_uses_real_coords():
 
 # ------------------------------------------------------------------- SAM 3.1
 
+@pytest.mark.asyncio
 async def test_sam_not_configured():
     with pytest.raises(NotConfigured):
         await SamVisionService(Settings()).segment_vehicles(b"x")
 
 
+@pytest.mark.asyncio
 async def test_sam_parses_detections():
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"detections": [
@@ -168,6 +180,7 @@ async def test_sam_parses_detections():
     assert len(out) == 2 and out[0]["label"] == "car"
 
 
+@pytest.mark.asyncio
 async def test_sam_invalid_image_rejected_without_pillow_payloads():
     with pytest.raises(ValidationFailed):
         SamVisionService.validate_image(b"not-an-image", max_bytes=1024)
@@ -183,18 +196,21 @@ class FakeReader:
         return self._results
 
 
+@pytest.mark.asyncio
 async def test_ocr_confident_plate_accepted():
     svc = EasyOCRService(Settings(), reader=FakeReader([((0, 0), "12345-A-6", 0.91)]))
     out = await svc.read_plate(b"img")
     assert out == {"plate": "12345A6", "confidence": 0.91, "accepted": True}
 
 
+@pytest.mark.asyncio
 async def test_ocr_uncertain_plate_rejected():
     svc = EasyOCRService(Settings(ocr_min_confidence=0.6), reader=FakeReader([((0, 0), "12345A6", 0.31)]))
     out = await svc.read_plate(b"img")
     assert out["accepted"] is False  # never grant access on a guess
 
 
+@pytest.mark.asyncio
 async def test_ocr_no_text():
     svc = EasyOCRService(Settings(), reader=FakeReader([]))
     assert (await svc.read_plate(b"img"))["plate"] is None
@@ -202,14 +218,34 @@ async def test_ocr_no_text():
 
 # ----------------------------------------------------------------------- voice
 
-WAV_BYTES = b"RIFF$\x00\x00\x00WAVEfmt " + b"\x00" * 32
+def _make_wav(seconds: float = 0.1, channels: int = 1, rate: int = 16000) -> bytes:
+    """A real, parseable PCM WAV (silence) for pipeline tests."""
+    frames = int(seconds * rate)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * channels * frames)
+    return buf.getvalue()
 
 
+def _wav_info(data: bytes) -> dict:
+    with wave.open(io.BytesIO(data), "rb") as w:
+        return {"channels": w.getnchannels(), "rate": w.getframerate(),
+                "width": w.getsampwidth(), "frames": w.getnframes()}
+
+
+WAV_BYTES = _make_wav()
+
+
+@pytest.mark.asyncio
 async def test_voice_disabled_by_default():
     with pytest.raises(NotConfigured):
         await MuseVoiceService(Settings()).transcribe(WAV_BYTES, "audio/wav")
 
 
+@pytest.mark.asyncio
 async def test_voice_rejects_unsupported_language_and_type():
     from app.meta.services.muse_voice import ensure_wav
     s = Settings(muse_voice_enabled=True, meta_voice_api_key="k")
@@ -220,6 +256,7 @@ async def test_voice_rejects_unsupported_language_and_type():
         await ensure_wav(b"audio", "video/mp4", 30)
 
 
+@pytest.mark.asyncio
 async def test_voice_wav_passthrough_and_conversion_unavailable(monkeypatch):
     import shutil
 
@@ -230,6 +267,44 @@ async def test_voice_wav_passthrough_and_conversion_unavailable(monkeypatch):
         await ensure_wav(b"webm-bytes", "audio/webm", 30)
 
 
+@pytest.mark.asyncio
+async def test_voice_wav_duration_is_capped():
+    from app.meta.services.muse_voice import ensure_wav
+    out = await ensure_wav(_make_wav(seconds=2), "audio/wav", 1)
+    info = _wav_info(out)
+    assert info["channels"] == 1 and info["rate"] == 16000 and info["width"] == 2
+    assert info["frames"] <= 16000  # ≤ 1 s at 16 kHz
+
+
+@pytest.mark.asyncio
+async def test_voice_nonconforming_wav_needs_ffmpeg(monkeypatch):
+    import shutil
+
+    from app.meta.services.muse_voice import ensure_wav
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    with pytest.raises(ProviderUnavailable):  # stereo 48 kHz WAV must be converted, not passed through
+        await ensure_wav(_make_wav(channels=2, rate=48000), "audio/wav", 30)
+
+
+@pytest.mark.asyncio
+async def test_voice_invalid_wav_and_unsupported_format_rejected():
+    from app.meta.services.muse_voice import ensure_wav
+    with pytest.raises(ValidationFailed):  # RIFF header but unparseable body
+        await ensure_wav(b"RIFF$\x00\x00\x00WAVEfmt " + b"\x00" * 32, "audio/wav", 30)
+    with pytest.raises(ValidationFailed):  # not on the accepted-type list
+        await ensure_wav(b"flac-bytes", "audio/flac", 30)
+
+
+def test_voice_upload_limit_has_one_config_source():
+    s = Settings(muse_voice_max_upload_mb=2, muse_voice_max_seconds=45)
+    svc = MuseVoiceService(s)
+    assert s.audio_upload_limit_bytes == svc._max_bytes == 2 * 1024 * 1024
+    assert s.public_status()["voice_max_seconds"] == 45
+    with pytest.raises(ValidationFailed):
+        svc.validate_upload(b"x" * (2 * 1024 * 1024 + 1), "audio/webm")
+
+
+@pytest.mark.asyncio
 async def test_voice_transcribes_with_documented_multipart_shape():
     seen = {}
 
@@ -250,6 +325,7 @@ async def test_voice_transcribes_with_documented_multipart_shape():
     assert "k" not in out["text"]
 
 
+@pytest.mark.asyncio
 async def test_voice_empty_transcript_rejected():
     s = Settings(muse_voice_enabled=True, meta_voice_api_key="k", meta_voice_base_url="http://v.local")
     svc = MuseVoiceService(s, transport=transport(lambda req: httpx.Response(200, json={"text": "  "})))
@@ -291,3 +367,26 @@ def test_status_never_exposes_secrets():
     status = s.public_status()
     assert "super-secret-value" not in json.dumps(status)
     assert status["assistant"] == "meta"
+
+
+def test_placeholder_env_values_count_as_unconfigured(monkeypatch):
+    # A copied-but-unfilled .env must not make the status claim "meta".
+    monkeypatch.setenv("MODEL_API_KEY", "sk-REPLACE_ME")
+    monkeypatch.setenv("MUSE_SPARK_MODEL", "some-model")
+    s = Settings.from_env()
+    assert s.muse_configured is False
+    assert s.public_status()["assistant"] == "grounded_fallback"
+
+
+def test_placeholder_supabase_values_count_as_unset(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://YOUR_PROJECT.supabase.co")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "sb_publishable_REPLACE_ME")
+    s = Settings.from_env()
+    assert s.supabase_url is None
+    assert s.supabase_publishable_key is None
+
+
+def test_sam_requires_a_real_http_url():
+    assert Settings(sam_service_url="LLM_2187466105533446_not-a-url").sam_configured is False
+    assert Settings(sam_service_url="https://sam.internal:9000").sam_configured is True
+    assert Settings(sam_service_url=None).sam_configured is False

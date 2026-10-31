@@ -50,6 +50,8 @@ function BookPage() {
     if (error) {
       const e = errCode(error);
       if (e.code === "INSUFFICIENT_FUNDS") toast.error(t("insufficient"));
+      else if (e.code === "FACILITY_FULL") toast.error(t("facilityFull"));
+      else if (e.code === "FACILITY_INACTIVE") toast.error(t("facilityInactive"));
       else toast.error(e.code);
       return;
     }

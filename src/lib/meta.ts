@@ -37,7 +37,25 @@ export const metaUnwrap = unwrap;
 
 export const metaBackendConfigured = () => BASE.length > 0;
 
-export type MetaStatus = { assistant: string; vision_sam: string; voice: string; voice_flag_on?: boolean; voice_key_present?: boolean };
+export type MetaStatus = { assistant: string; vision_sam: string; voice: string; voice_flag_on?: boolean; voice_key_present?: boolean; voice_max_seconds?: number; voice_max_upload_mb?: number };
+
+/** Recording cap shared by all microphone UIs: backend-configured, 30 s safe default. */
+export function voiceMaxSeconds(status?: MetaStatus | null): number {
+  const v = Number(status?.voice_max_seconds);
+  return Number.isFinite(v) && v > 0 ? Math.min(600, Math.max(5, v)) : 30;
+}
+
+const VOICE_FILENAMES: Record<string, string> = {
+  "audio/wav": "voice.wav", "audio/x-wav": "voice.wav",
+  "audio/webm": "voice.webm", "audio/mp4": "voice.mp4", "audio/x-m4a": "voice.m4a",
+  "audio/mpeg": "voice.mp3", "audio/ogg": "voice.ogg", "audio/aac": "voice.aac",
+};
+
+/** Filename matching the actual MediaRecorder Blob type (never a hardcoded container). */
+export function voiceUploadFilename(blob: Blob): string {
+  const type = (blob.type || "").split(";")[0].trim().toLowerCase();
+  return VOICE_FILENAMES[type] ?? "voice.webm";
+}
 
 async function authHeaders(): Promise<Record<string, string>> {
   const { data } = await supabase.auth.getSession();
@@ -67,7 +85,7 @@ export type MetaFacility = {
   features: string[]; rating?: number | null;
 };
 
-export async function metaChat(messages: { role: string; content: string }[], lang: string): Promise<{ reply: string; facilities: MetaFacility[] }> {
+export async function metaChat(messages: { role: string; content: string }[], lang: string): Promise<{ reply: string; facilities: MetaFacility[]; mode?: string; model?: string }> {
   if (!metaBackendConfigured()) throw new Error("meta-backend-not-configured");
   return unwrap(await fetch(`${BASE}/api/v1/meta/assistant/chat`, {
     method: "POST",
@@ -79,7 +97,7 @@ export async function metaChat(messages: { role: string; content: string }[], la
 export async function metaTranscribe(audio: Blob, lang: string): Promise<{ text: string }> {
   if (!metaBackendConfigured()) throw new Error("meta-backend-not-configured");
   const form = new FormData();
-  form.append("audio", audio, "voice.webm");
+  form.append("audio", audio, voiceUploadFilename(audio));
   form.append("language", lang);
   return unwrap(await fetch(`${BASE}/api/v1/meta/voice/transcribe`, { method: "POST", headers: await authHeaders(), body: form }));
 }

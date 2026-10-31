@@ -354,6 +354,30 @@ def test_authorized_below_active_bookings_blocked(env):
     assert "active reservations" in r.json()["error"]["message"]
 
 
+def test_reduced_authorized_still_cannot_exceed_available(env):
+    # Reduction stays above the 1 active booking, so the generic rule is
+    # the one that must fire: 20 available cannot fit in 10 authorized.
+    client, _ = env
+    r = client.patch(f"/api/v1/admin/facilities/{FACILITY_ID}",
+                     headers=ADMIN,
+                     json={"authorized_capacity": 10, "reason": "Reduce capacity"})
+    assert r.status_code == 422
+    assert "exceed authorized" in r.json()["error"]["message"]
+
+
+def test_valid_capacity_reduction_succeeds(env):
+    # Reducing authorized + available together, staying >= active bookings.
+    client, db = env
+    r = client.patch(f"/api/v1/admin/facilities/{FACILITY_ID}",
+                     headers=ADMIN,
+                     json={"authorized_capacity": 10, "available": 10,
+                           "reason": "Reduce capacity"})
+    assert r.status_code == 200
+    assert db.facilities[0]["authorized_capacity"] == 10
+    assert db.facilities[0]["available"] == 10
+    assert db.facilities[0]["capacity"] == 10  # legacy column synced
+
+
 # ------------------------------------------------------------------ pricing
 
 def test_price_below_bounds_rejected(env):

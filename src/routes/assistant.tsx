@@ -7,7 +7,7 @@ import { FacilityCard, type Facility } from "@/components/FacilityCard";
 import { useFacilities } from "@/lib/data";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
-import { fetchMetaStatus, metaBackendConfigured, metaChat, metaTranscribe } from "@/lib/meta";
+import { fetchMetaStatus, metaBackendConfigured, metaChat, metaTranscribe, voiceMaxSeconds } from "@/lib/meta";
 
 export const Route = createFileRoute("/assistant")({
   head: () => ({ meta: [{ title: "AI Assistant — ParkSpot AI" }, { name: "description", content: "Ask ParkSpot AI where to park, prices and wallet questions." }, { property: "og:title", content: "AI Assistant — ParkSpot AI" }, { property: "og:description", content: "Your AI parking assistant." }] }),
@@ -26,6 +26,7 @@ function Assistant() {
   const [recording, setRecording] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const suggestions = [t("suggest1"), t("suggest2"), t("suggest3")];
   const { data: metaStatus } = useQuery({
@@ -35,12 +36,16 @@ function Assistant() {
     retry: false,
   });
   const voiceEnabled = metaStatus?.voice === "enabled";
-  const useMeta = metaBackendConfigured() && !!user && metaStatus?.assistant === "meta";
+  // Backend assistant runs in one of two honestly-labeled modes: Muse Spark
+  // when configured, otherwise the deterministic grounded-inventory mode.
+  const [chatMode, setChatMode] = useState<string | null>(null);
+  const useMeta = metaBackendConfigured() && !!user && (metaStatus?.assistant === "meta" || metaStatus?.assistant === "grounded_fallback");
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
 
   const sendViaMeta = async (next: Msg[]) => {
     const out = await metaChat(next.map((m) => ({ role: m.role, content: m.content })), lang);
+    setChatMode(out.mode ?? "meta");
     // Cards render only for facilities that exist in real inventory — never model-invented ones.
     const cards = out.facilities
       .map((f) => allFacilities.find((r) => r.id === f.id))
@@ -49,6 +54,7 @@ function Assistant() {
   };
 
   const sendViaStream = async (next: Msg[]) => {
+    setChatMode("grounded_fallback"); // /api/chat is the grounded engine — label it as such
     setMsgs([...next, { role: "assistant", content: "" }]);
     const res = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: next.map((m) => ({ role: m.role, content: m.content })), lang }) });
     if (!res.ok || !res.body) throw new Error((await res.text()) || `Error ${res.status}`);
@@ -82,6 +88,7 @@ function Assistant() {
       const chunks: BlobPart[] = [];
       rec.ondataavailable = (e) => chunks.push(e.data);
       rec.onstop = async () => {
+        if (recordTimeoutRef.current) { clearTimeout(recordTimeoutRef.current); recordTimeoutRef.current = null; }
         stream.getTracks().forEach((tr) => tr.stop());
         setRecording(false);
         try {
@@ -91,6 +98,8 @@ function Assistant() {
       };
       recorderRef.current = rec;
       rec.start(); setRecording(true);
+      // Same backend-configured cap as Home (30 s safe default).
+      recordTimeoutRef.current = setTimeout(() => recorderRef.current?.stop(), voiceMaxSeconds(metaStatus) * 1000);
     } catch { setRecording(false); }
   };
 
@@ -101,6 +110,11 @@ function Assistant() {
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand"><Sparkles className="h-4 w-4 text-primary-foreground" /></span>
           <div className="rounded-3xl rounded-ss-md border bg-card p-3 text-sm shadow-soft">{t("aiHello")}</div>
         </div>
+        {(chatMode ?? metaStatus?.assistant) && (
+          <p className="ps-12 text-[11px] font-medium text-muted-foreground">
+            {(chatMode ?? metaStatus?.assistant) === "meta" ? t("aiModeMeta") : t("aiModeGrounded")}
+          </p>
+        )}
         {msgs.length === 0 && <div className="flex flex-wrap gap-2 ps-12">{suggestions.map((s) => <button key={s} onClick={() => void send(s)} className="rounded-full border bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground">{s}</button>)}</div>}
         {msgs.map((m, i) => (
           <div key={i}>

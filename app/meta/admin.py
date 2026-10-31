@@ -375,12 +375,17 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         cur = rows[0]
         patch = {k: v for k, v in body.model_dump().items() if v is not None and k != "reason"}
         merged = {**cur, **patch}
-        _validate_capacities(int(merged["total_capacity"]), int(merged["authorized_capacity"]), int(merged["available"]))
+        # Active-reservation protection runs FIRST: shrinking authorized
+        # capacity below live confirmed bookings is the most specific (and
+        # safety-critical) failure, and it must be reported even when the
+        # merged row would also trip a generic capacity rule (e.g. the
+        # unchanged `available` now exceeding the reduced authorized cap).
         if int(merged["authorized_capacity"]) < int(cur.get("authorized_capacity") or 0):
             active_bookings = await store.get("bookings", c.jwt, select="id", facility_id=f"eq.{fid}",
                                               status="eq.confirmed", limit="5000")
             if len(active_bookings) > int(merged["authorized_capacity"]):
                 raise ValidationFailed("Authorized capacity cannot be below active reservations.")
+        _validate_capacities(int(merged["total_capacity"]), int(merged["authorized_capacity"]), int(merged["available"]))
         patch["capacity"] = int(merged["authorized_capacity"])
         await store.req("PATCH", "/rest/v1/facilities", c.jwt, params={"id": f"eq.{fid}"},
                         json=patch, prefer="return=minimal")

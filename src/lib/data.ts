@@ -20,7 +20,10 @@ export function useFacilities() {
     queryFn: async () => {
       const { data, error } = await supabase.from("facilities").select("*").order("rating", { ascending: false });
       if (error) throw error;
-      return data;
+      // Deactivated facilities (admin toggle, migration 0001) are not
+      // bookable inventory — never show them to drivers. Rows from a
+      // pre-0001 database have no `active` column and pass through.
+      return data.filter((f) => (f as { active?: boolean }).active !== false);
     },
   });
 }

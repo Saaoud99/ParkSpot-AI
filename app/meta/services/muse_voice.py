@@ -21,8 +21,10 @@ to review and edit before searching.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import shutil
+import wave
 
 import httpx
 
@@ -40,18 +42,57 @@ def _is_wav(data: bytes) -> bool:
     return len(data) > 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
+def _prepare_wav(data: bytes, max_seconds: int) -> bytes | None:
+    """Validate a WAV input.
+
+    Returns normalized bytes when the input is already mono 16 kHz 16-bit
+    PCM (trimmed to ``max_seconds`` when longer), ``None`` when it is a
+    valid WAV in some other format and still needs FFmpeg conversion, and
+    raises :class:`ValidationFailed` for RIFF/WAVE bytes that do not parse.
+    """
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            channels, rate, width = w.getnchannels(), w.getframerate(), w.getsampwidth()
+            comptype, frames = w.getcomptype(), w.getnframes()
+            if comptype != "NONE" or width != 2 or channels != 1 or rate != 16000:
+                return None
+            max_frames = max(0, int(max_seconds)) * rate
+            if frames <= max_frames:
+                return data
+            w.rewind()
+            pcm = w.readframes(max_frames)
+    except ValidationFailed:
+        raise
+    except Exception:
+        raise ValidationFailed("Invalid WAV recording. Please try again.")
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(pcm)
+    return out.getvalue()
+
+
 async def ensure_wav(data: bytes, content_type: str | None, max_seconds: int) -> bytes:
-    """Return mono 16 kHz 16-bit WAV bytes, converting with FFmpeg if needed."""
+    """Return validated mono 16 kHz 16-bit WAV bytes, capped at max_seconds.
+
+    A conforming WAV is validated (and trimmed) in-process; every other
+    accepted input — including a valid WAV in the wrong format — is
+    converted with FFmpeg, and the converted output is validated again.
+    """
     ctype = (content_type or "").split(";")[0].strip()
     if _is_wav(data):
-        return data
-    if ctype and ctype not in INPUT_TYPES:
+        prepared = _prepare_wav(data, max_seconds)
+        if prepared is not None:
+            return prepared
+    elif ctype and ctype not in INPUT_TYPES:
         raise ValidationFailed(f"Unsupported audio type: {ctype}.")
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise ProviderUnavailable(
             "Audio conversion unavailable: FFmpeg is not installed on the backend "
-            "and the recording is not WAV. Install FFmpeg or record WAV.")
+            "and the recording is not already mono 16 kHz WAV. Install FFmpeg or record WAV.")
     proc = await asyncio.create_subprocess_exec(
         ffmpeg, "-v", "error", "-i", "pipe:0",
         "-ac", "1", "-ar", "16000", "-sample_fmt", "s16",
@@ -65,7 +106,10 @@ async def ensure_wav(data: bytes, content_type: str | None, max_seconds: int) ->
         raise ProviderTimeout("Audio conversion timed out.")
     if proc.returncode != 0 or not _is_wav(out):
         raise ValidationFailed("Could not decode the recording. Please try again.")
-    return out
+    prepared_out = _prepare_wav(out, max_seconds)
+    if prepared_out is None:
+        raise ValidationFailed("Could not decode the recording. Please try again.")
+    return prepared_out
 
 
 class MuseVoiceService:
@@ -75,7 +119,7 @@ class MuseVoiceService:
 
     @property
     def _max_bytes(self) -> int:
-        return self._s.muse_voice_max_upload_mb * 1024 * 1024
+        return self._s.audio_upload_limit_bytes
 
     def validate_upload(self, data: bytes, content_type: str | None) -> None:
         if not data:

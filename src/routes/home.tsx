@@ -9,7 +9,7 @@ import { useFacilities, useWallet, mad } from "@/lib/data";
 import { GeoError, formatDistance, getCurrentPositionOnce, haversineMeters } from "@/lib/geo";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
-import { fetchMetaStatus, metaBackendConfigured, metaTranscribe } from "@/lib/meta";
+import { fetchMetaStatus, metaBackendConfigured, metaTranscribe, voiceMaxSeconds } from "@/lib/meta";
 
 export const Route = createFileRoute("/home")({
   head: () => ({ meta: [{ title: "Discover parking — ParkSpot AI" }, { name: "description", content: "Browse parking facilities with live availability and prices in MAD." }, { property: "og:title", content: "Discover parking — ParkSpot AI" }, { property: "og:description", content: "Live parking availability across Morocco." }] }),
@@ -17,7 +17,6 @@ export const Route = createFileRoute("/home")({
 });
 
 const cities = ["All", "Casablanca", "Rabat", "Marrakech", "Tangier"];
-const MAX_RECORD_S = 30;
 
 function HomePage() {
   const { t, lang } = useI18n();
@@ -34,6 +33,7 @@ function HomePage() {
   // ---- voice search state
   const { data: metaStatus } = useQuery({ queryKey: ["meta-status"], queryFn: fetchMetaStatus, enabled: metaBackendConfigured(), retry: false });
   const voiceEnabled = metaStatus?.voice === "enabled";
+  const maxRecordS = voiceMaxSeconds(metaStatus);
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
@@ -83,7 +83,7 @@ function HomePage() {
       rec.start(); setRecording(true); setElapsed(0);
       timerRef.current = setInterval(() => {
         setElapsed((s) => {
-          if (s + 0.25 >= MAX_RECORD_S) { recorderRef.current?.stop(); return s; }
+          if (s + 0.25 >= maxRecordS) { recorderRef.current?.stop(); return s; }
           return s + 0.25;
         });
       }, 250);
@@ -143,7 +143,7 @@ function HomePage() {
         {recording && (
           <div className="mt-3 flex items-center gap-3 rounded-full bg-card/95 py-2 pe-2 ps-4 text-sm text-foreground shadow-soft">
             <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-destructive" />
-            <span className="font-medium">{t("recording")} {Math.floor(elapsed)}s / {MAX_RECORD_S}s</span>
+            <span className="font-medium">{t("recording")} {Math.floor(elapsed)}s / {maxRecordS}s</span>
             <span className="flex-1" />
             <button type="button" onClick={() => recorderRef.current?.stop()} className="flex h-8 items-center gap-1 rounded-full bg-primary px-3 text-xs font-semibold text-primary-foreground">
               <Square className="h-3 w-3" />{t("stopRecording")}

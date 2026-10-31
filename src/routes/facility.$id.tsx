@@ -19,7 +19,11 @@ function FacilityPage() {
   const f = data.find((x) => x.id === id);
   if (isLoading) return <AppShell back><div className="m-5 h-64 animate-pulse rounded-3xl bg-card" /></AppShell>;
   if (!f) return <AppShell back><p className="p-5">Not found</p></AppShell>;
-  const pct = Math.round((f.available / Math.max(1, f.capacity)) * 100);
+  // Drivers see availability against the *authorized* capacity (migration
+  // 0001) — the spaces ParkSpot is allowed to sell — not the facility's
+  // total physical capacity. Falls back to legacy `capacity` pre-0001.
+  const authorized = (f as { authorized_capacity?: number }).authorized_capacity ?? f.capacity;
+  const pct = Math.round((f.available / Math.max(1, authorized)) * 100);
   return (
     <AppShell back title={lang === "ar" ? f.name_ar : f.name}>
       <img src={imageFor(f.image_key)} alt={f.name} className="h-64 w-full object-cover" />
@@ -33,7 +37,7 @@ function FacilityPage() {
         </div>
         <div className="mt-5 grid grid-cols-3 gap-3 text-center">
           <div className="rounded-2xl border bg-card p-3"><p className="text-xs text-muted-foreground">{t("perHour")}</p><p className="font-bold text-primary">{mad(f.price_per_hour_cents, lang)}</p></div>
-          <div className="rounded-2xl border bg-card p-3"><p className="text-xs text-muted-foreground">{t("availability")}</p><p className="font-bold">{f.available}/{f.capacity}</p></div>
+          <div className="rounded-2xl border bg-card p-3"><p className="text-xs text-muted-foreground">{t("availability")} · {t("authorizedCapacityLbl")}</p><p className="font-bold">{f.available}/{authorized}</p></div>
           <div className="rounded-2xl border bg-card p-3"><Clock className="mx-auto h-4 w-4 text-primary" /><p className="text-xs font-semibold">{t("open24")}</p></div>
         </div>
         <div className="mt-4 h-2 overflow-hidden rounded-full bg-secondary"><div className="h-full bg-primary" style={{ width: `${pct}%` }} /></div>

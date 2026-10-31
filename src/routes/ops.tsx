@@ -111,13 +111,19 @@ function Ops() {
           </Link>
         )}
         <VisionPanel />
-        {facilities.map((f) => (
+        {facilities.map((f) => {
+          // Partners may correct live availability, but never beyond the
+          // facility's authorized capacity (falls back to legacy capacity
+          // on a pre-0001 database where the column does not exist yet).
+          const authorized = (f as { authorized_capacity?: number }).authorized_capacity ?? f.capacity;
+          return (
           <Card key={f.id} className="flex items-center gap-3">
-            <div className="flex-1"><p className="font-semibold">{f.name}</p><p className="text-xs text-muted-foreground">{t("capacity")}: {f.capacity}</p></div>
-            <input type="number" min={0} max={f.capacity} defaultValue={f.available} onChange={(e) => setEdit({ ...edit, [f.id]: e.target.value })} className="h-10 w-20 rounded-xl border bg-background px-2 text-center" />
-            <button onClick={() => update(f.id, f.capacity)} className="h-10 rounded-full bg-primary px-3 text-sm font-semibold text-primary-foreground">{t("update")}</button>
+            <div className="flex-1"><p className="font-semibold">{f.name}</p><p className="text-xs text-muted-foreground">{t("authorizedCapacityLbl")}: {authorized}</p></div>
+            <input type="number" min={0} max={authorized} defaultValue={f.available} onChange={(e) => setEdit({ ...edit, [f.id]: e.target.value })} className="h-10 w-20 rounded-xl border bg-background px-2 text-center" />
+            <button onClick={() => update(f.id, authorized)} className="h-10 rounded-full bg-primary px-3 text-sm font-semibold text-primary-foreground">{t("update")}</button>
           </Card>
-        ))}
+          );
+        })}
       </div>
     </AppShell>
   );

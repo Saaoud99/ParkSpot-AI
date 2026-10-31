@@ -32,6 +32,7 @@ from .geo import nearby_facilities, validate_coordinates
 from .inventory import Inventory
 from .metrics import METRICS, elapsed_ms
 from .services import EasyOCRService, MuseSparkService, MuseVoiceService, SamVisionService
+from .services.grounded import GroundedAssistant
 from .tools import ToolExecutor
 
 log = logging.getLogger("parkspot.meta.api")
@@ -40,6 +41,7 @@ settings = Settings.from_env()
 auth = Authenticator(settings)
 inventory = Inventory(settings)
 muse = MuseSparkService(settings)
+grounded = GroundedAssistant()
 sam = SamVisionService(settings)
 ocr = EasyOCRService(settings)
 voice = MuseVoiceService(settings)
@@ -116,11 +118,25 @@ async def assistant_chat(body: ChatRequest, authorization: str | None = Header(d
         coords = (body.coords.lat, body.coords.lng)
     executor = ToolExecutor(inventory, caller.jwt, coords=coords)
     started = time.perf_counter()
+    messages = [m.model_dump() for m in body.messages]
+    if not settings.muse_configured:
+        # Always-available mode: deterministic answers from real inventory,
+        # honestly labeled — never presented as Muse Spark output.
+        result = await grounded.ask(messages=messages, executor=executor, lang=body.lang)
+        METRICS.record("grounded_assistant", True, elapsed_ms(started))
+        log.info("assistant chat (grounded) user=%s facilities=%d", caller.user_id, len(result["facilities"]))
+        return result
     try:
-        result = await muse.ask(messages=[m.model_dump() for m in body.messages], executor=executor, lang=body.lang)
-    except Exception as e:
+        result = await muse.ask(messages=messages, executor=executor, lang=body.lang)
+    except MetaError as e:
+        # Provider failed: degrade to the grounded mode and say so in the
+        # response (mode field) instead of leaving the driver with an error.
         METRICS.record("muse_spark", False, elapsed_ms(started), str(e)[:120])
-        raise
+        log.warning("muse unavailable (%s) — grounded fallback for user=%s", e.code, caller.user_id)
+        result = await grounded.ask(messages=messages, executor=ToolExecutor(inventory, caller.jwt, coords=coords), lang=body.lang)
+        METRICS.record("grounded_assistant", True, elapsed_ms(started))
+        return result
+    result = {**result, "mode": "meta"}
     METRICS.record("muse_spark", True, elapsed_ms(started))
     log.info("assistant chat user=%s facilities=%d", caller.user_id, len(result["facilities"]))
     return result
@@ -134,7 +150,8 @@ async def vision_analyze(image: UploadFile = File(...), facility_id: str | None 
     await _rate_limit(f"vision:{caller.user_id}")
     if not FLAGS.get("vision"):
         raise NotConfigured("Camera vision is disabled by an administrator.")
-    data = await image.read()
+    # Bounded read: never load an unbounded upload into memory.
+    data = await image.read(settings.max_image_bytes + 1)
     started = time.perf_counter()
     try:
         result = await access_svc.analyze(image=data, content_type=image.content_type or "image/jpeg",
@@ -182,7 +199,7 @@ async def voice_transcribe(audio: UploadFile = File(...), language: str = Form(d
     await _rate_limit(f"voice:{caller.user_id}")
     if not FLAGS.get("voice"):
         raise NotConfigured("Voice input is disabled by an administrator.")
-    data = await audio.read()
+    data = await audio.read(settings.audio_upload_limit_bytes + 1)
     started = time.perf_counter()
     try:
         result = await voice.transcribe(data, audio.content_type or "audio/webm", language)
