@@ -28,10 +28,16 @@ export const Route = createFileRoute("/api/chat")({
     handlers: {
       POST: async ({ request }) => {
         const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
-        if (rateLimited(ip)) return new Response("Too many requests. Please wait a moment.", { status: 429 });
-        const body = (await request.json().catch(() => null)) as { messages?: Msg[]; lang?: string } | null;
+        if (rateLimited(ip))
+          return new Response("Too many requests. Please wait a moment.", { status: 429 });
+        const body = (await request.json().catch(() => null)) as {
+          messages?: Msg[];
+          lang?: string;
+        } | null;
         const messages = (body?.messages ?? [])
-          .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+          .filter(
+            (m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string",
+          )
           .slice(-12)
           .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
         const lastUser = [...messages].reverse().find((m) => m.role === "user");
@@ -39,13 +45,19 @@ export const Route = createFileRoute("/api/chat")({
 
         const url = process.env["SUPABASE_URL"];
         const key = process.env["SUPABASE_PUBLISHABLE_KEY"];
-        if (!url || !key) return new Response("Assistant inventory is not configured on this server.", { status: 503 });
-        const sb = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+        if (!url || !key)
+          return new Response("Assistant inventory is not configured on this server.", {
+            status: 503,
+          });
+        const sb = createClient(url, key, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
         // select("*") on purpose: the generated types predate migration
         // 0001, and "*" returns `active` when the column exists (post-0001)
         // and simply omits it before — the filter below handles both.
         const { data, error } = await sb.from("facilities").select("*");
-        if (error) return new Response("Could not load parking inventory right now.", { status: 502 });
+        if (error)
+          return new Response("Could not load parking inventory right now.", { status: 502 });
         const facilities = ((data ?? []) as AssistantFacility[]).filter(
           (f) => (f as AssistantFacility & { active?: boolean }).active !== false,
         );

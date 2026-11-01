@@ -2,9 +2,39 @@ import { describe, expect, it } from "vitest";
 import { groundedReply, type AssistantFacility } from "@/lib/assistantCore";
 
 const F: AssistantFacility[] = [
-  { id: "1", name: "Casa Marina Parking", city: "Casablanca", address: "Bd Mohammed V", price_per_hour_cents: 2000, available: 14, capacity: 120, features: ["covered"], rating: 4.6 },
-  { id: "2", name: "Maârif Open Lot", city: "Casablanca", address: "Rue Ibnou Mounir", price_per_hour_cents: 800, available: 22, capacity: 90, features: ["ev"], rating: 4.3 },
-  { id: "3", name: "Full Park", city: "Casablanca", address: "X", price_per_hour_cents: 500, available: 0, capacity: 50, features: [], rating: 4.9 },
+  {
+    id: "1",
+    name: "Casa Marina Parking",
+    city: "Casablanca",
+    address: "Bd Mohammed V",
+    price_per_hour_cents: 2000,
+    available: 14,
+    capacity: 120,
+    features: ["covered"],
+    rating: 4.6,
+  },
+  {
+    id: "2",
+    name: "Maârif Open Lot",
+    city: "Casablanca",
+    address: "Rue Ibnou Mounir",
+    price_per_hour_cents: 800,
+    available: 22,
+    capacity: 90,
+    features: ["ev"],
+    rating: 4.3,
+  },
+  {
+    id: "3",
+    name: "Full Park",
+    city: "Casablanca",
+    address: "X",
+    price_per_hour_cents: 500,
+    available: 0,
+    capacity: 50,
+    features: [],
+    rating: 4.9,
+  },
 ];
 
 describe("groundedReply", () => {

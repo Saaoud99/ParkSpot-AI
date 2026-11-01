@@ -136,7 +136,7 @@ async def assistant_chat(body: ChatRequest, authorization: str | None = Header(d
         result = await grounded.ask(messages=messages, executor=ToolExecutor(inventory, caller.jwt, coords=coords), lang=body.lang)
         METRICS.record("grounded_assistant", True, elapsed_ms(started))
         return result
-    result = {**result, "mode": "meta"}
+    result = {"mode": "meta", **result}  # keep "grounded_fallback" when Muse delegated to the grounded safeguard
     METRICS.record("muse_spark", True, elapsed_ms(started))
     log.info("assistant chat user=%s facilities=%d", caller.user_id, len(result["facilities"]))
     return result

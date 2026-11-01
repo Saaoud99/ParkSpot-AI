@@ -6,17 +6,24 @@ claims a live integration. Run:  pytest tests/test_meta_integration.py -q
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import logging
 import wave
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
 import httpx
 import pytest
 
 from app.meta.config import Settings
-from app.meta.errors import NotConfigured, ProviderUnavailable, ValidationFailed
-from app.meta.inventory import quote_cents
+from app.meta.errors import (InvalidProviderResponse, MetaError,
+                             NotConfigured, ProviderTimeout,
+                             ProviderUnavailable, ValidationFailed)
+from app.meta.inventory import Inventory, effective_available, quote_cents
 from app.meta.services.easy_ocr import EasyOCRService
+from app.meta.services.grounded import GroundedAssistant
 from app.meta.services.muse_spark import MuseSparkService
 from app.meta.services.muse_voice import MuseVoiceService
 from app.meta.services.sam_vision import SamVisionService
@@ -87,7 +94,10 @@ async def test_muse_tool_call_returns_only_real_facilities():
     out = await configured(handler).ask(
         messages=[{"role": "user", "content": "parking in Casablanca"}],
         executor=ToolExecutor(FakeInventory(), "jwt"))
-    assert out["reply"].startswith("Casa Marina")
+    # Factual turns are rendered deterministically from tool results, not
+    # from model prose — the facility and its server-side price are present.
+    assert "Casa Marina Parking" in out["reply"]
+    assert "12.00" in out["reply"]
     assert [f["id"] for f in out["facilities"]] == [FACILITY["id"]]
     assert out["facilities"][0]["price_mad_per_hour"] == 12.0  # from cents, server-side
 
@@ -109,6 +119,477 @@ async def test_muse_timeout_retries_then_reports():
     with pytest.raises(Exception) as ei:
         await svc.ask(messages=[{"role": "user", "content": "hi"}], executor=ToolExecutor(FakeInventory(), "jwt"))
     assert ei.value.code == "provider_timeout"
+
+
+def _tool_call(call_id, name, args):
+    return {"id": call_id, "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+@pytest.mark.asyncio
+async def test_muse_replays_complete_assistant_tool_message():
+    seen = []
+    assistant_msg = {"role": "assistant", "content": None, "tool_calls": [
+        _tool_call("c1", "search_facilities", {"city": "Casablanca"})]}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        if len(seen) == 1:
+            return httpx.Response(200, json={"choices": [{"message": assistant_msg}]})
+        return chat_response(content="done")
+
+    await configured(handler).ask(
+        messages=[{"role": "user", "content": "parking in Casablanca"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"))
+    # The assistant message is replayed byte-identical (content: null and the
+    # full tool_calls object preserved), then exactly one tool result follows.
+    assert seen[1]["messages"][-2] == assistant_msg
+    tool_msg = seen[1]["messages"][-1]
+    assert tool_msg["role"] == "tool" and tool_msg["tool_call_id"] == "c1"
+    assert json.loads(tool_msg["content"])["facilities"][0]["id"] == FACILITY["id"]
+
+
+@pytest.mark.asyncio
+async def test_muse_tool_results_match_every_tool_call_id():
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        if len(seen) == 1:
+            return chat_response(tool_calls=[
+                _tool_call("c1", "search_facilities", {"city": "Casablanca"}),
+                _tool_call("c2", "get_facility_details", {"facility_id": FACILITY["id"]}),
+            ])
+        return chat_response(content="done")
+
+    await configured(handler).ask(
+        messages=[{"role": "user", "content": "parking in Casablanca"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"))
+    tool_msgs = seen[1]["messages"][-2:]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2"]
+    assert all(m["role"] == "tool" and json.loads(m["content"]) for m in tool_msgs)
+
+
+@pytest.mark.asyncio
+async def test_muse_missing_tool_call_id_fails_honestly():
+    bad_calls = [
+        {"type": "function", "function": {"name": "search_facilities", "arguments": "{}"}},
+        _tool_call("", "search_facilities", {}),
+        _tool_call("   ", "search_facilities", {}),
+        {**_tool_call("c1", "search_facilities", {}), "id": 42},
+    ]
+    for bad in bad_calls:
+        svc = configured(lambda req, bad=bad: chat_response(tool_calls=[bad]))
+        with pytest.raises(InvalidProviderResponse):
+            await svc.ask(messages=[{"role": "user", "content": "hi"}],
+                          executor=ToolExecutor(FakeInventory(), "jwt"))
+
+
+@pytest.mark.asyncio
+async def test_muse_malformed_tool_calls_become_typed_errors():
+    bad_messages = [
+        {"role": "assistant", "content": None, "tool_calls": {"id": "c1"}},  # not a list
+        {"role": "assistant", "content": None, "tool_calls": ["bogus"]},  # not an object
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},  # no function
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "search_facilities", "arguments": "{not json"}}]},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "search_facilities", "arguments": "[1, 2]"}}]},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "search_facilities", "arguments": {"city": "Casablanca"}}}]},
+    ]
+    for msg in bad_messages:
+        svc = configured(lambda req, msg=msg: httpx.Response(200, json={"choices": [{"message": msg}]}))
+        with pytest.raises(InvalidProviderResponse) as ei:
+            await svc.ask(messages=[{"role": "user", "content": "hi"}],
+                          executor=ToolExecutor(FakeInventory(), "jwt"))
+        assert ei.value.code == "invalid_provider_response"  # typed MetaError -> grounded fallback
+
+
+@pytest.mark.asyncio
+async def test_muse_loop_terminates_after_three_tool_rounds():
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        if len(seen) <= 3:
+            return chat_response(tool_calls=[
+                _tool_call(f"c{len(seen)}", "search_facilities", {"city": "Casablanca"})])
+        return chat_response(content="Final answer.")
+
+    out = await configured(handler).ask(
+        messages=[{"role": "user", "content": "parking in Casablanca"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert len(seen) == 4  # 3 tool rounds + exactly one final no-tools call
+    assert "tools" not in seen[3] and "tool_choice" not in seen[3]
+    assert seen[3]["max_completion_tokens"] == 400
+    assert "Casa Marina Parking" in out["reply"]
+
+
+@pytest.mark.asyncio
+async def test_muse_payload_contract():
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if len(seen) == 1:
+            return chat_response(tool_calls=[
+                _tool_call("c1", "search_facilities", {"city": "Casablanca"})])
+        return chat_response(content="done")
+
+    await configured(handler).ask(
+        messages=[{"role": "user", "content": "parking in Casablanca"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"))
+    req = seen[0]
+    body = json.loads(req.content)
+    assert str(req.url) == "https://api.meta.ai/v1/chat/completions"
+    assert req.headers["authorization"] == "Bearer test-key"
+    assert body["model"] == "test-model"
+    assert body["tool_choice"] == "auto"
+    assert body["max_completion_tokens"] == 600 and "max_tokens" not in body
+    assert [t["function"]["name"] for t in body["tools"]] == [
+        "search_facilities", "get_facility_details", "check_availability",
+        "calculate_booking_quote", "search_nearby_facilities"]
+
+
+def test_muse_default_model_and_env_override(monkeypatch):
+    assert Settings().muse_spark_model == "muse-spark-1.3"
+    assert Settings().muse_configured is False  # default model alone never enables the LLM
+    monkeypatch.setenv("MODEL_API_KEY", "k")
+    monkeypatch.setenv("MUSE_SPARK_MODEL", "muse-spark-1.2")
+    s = Settings.from_env()
+    assert s.muse_spark_model == "muse-spark-1.2" and s.muse_configured is True
+
+
+@pytest.mark.asyncio
+async def test_muse_unverified_prose_is_not_returned():
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return chat_response(tool_calls=[
+                _tool_call("c1", "search_facilities", {"city": "Casablanca"})])
+        return chat_response(content="Invented Parking Palace has 500 spaces free for 5 MAD/h. Trust me.")
+
+    out = await configured(handler).ask(
+        messages=[{"role": "user", "content": "parking in Casablanca"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert "Invented Parking Palace" not in out["reply"] and "500" not in out["reply"]
+    assert "Casa Marina Parking" in out["reply"]
+    assert "12.00" in out["reply"] and "14/120" in out["reply"]  # server-verified price/availability
+
+
+@pytest.mark.asyncio
+async def test_muse_wrong_quote_total_is_corrected():
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return chat_response(tool_calls=[
+                _tool_call("c1", "calculate_booking_quote", {"facility_id": FACILITY["id"], "hours": 3})])
+        return chat_response(content="That will be 999 MAD in total.")
+
+    out = await configured(handler).ask(
+        messages=[{"role": "user", "content": "3 hours in Casablanca?"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert "999" not in out["reply"]
+    assert "36.00 MAD" in out["reply"]  # 12 MAD/h x 3h, computed server-side
+    assert [f["id"] for f in out["facilities"]] == [FACILITY["id"]]
+
+
+@pytest.mark.asyncio
+async def test_muse_natural_reply_preserved_without_tools():
+    svc = configured(lambda req: chat_response(content="Hello! I can help you find parking."))
+    out = await svc.ask(messages=[{"role": "user", "content": "hello"}],
+                        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert out["reply"] == "Hello! I can help you find parking."
+    assert out["facilities"] == []
+
+
+@pytest.mark.asyncio
+async def test_muse_factual_question_without_tool_calls_is_grounded():
+    # The model answers a price/availability question from prose, calling no
+    # tools. The server-side safeguard must ground it instead of shipping
+    # invented numbers.
+    svc = configured(lambda req: chat_response(
+        content="Casa Marina Parking costs 999 MAD/h and has 500 spaces free right now."))
+    out = await svc.ask(messages=[{"role": "user", "content": "How much is parking in Casablanca?"}],
+                        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert "999" not in out["reply"] and "500" not in out["reply"]
+    assert "Casa Marina Parking" in out["reply"] and "12.00" in out["reply"]  # real row, server price
+    assert [f["id"] for f in out["facilities"]] == [FACILITY["id"]]
+    assert out["mode"] == "grounded_fallback"  # honestly labeled
+
+
+@pytest.mark.asyncio
+async def test_muse_general_conversation_without_tool_calls_stays_natural():
+    svc = configured(lambda req: chat_response(content="Hi there! Great to meet you."))
+    out = await svc.ask(messages=[{"role": "user", "content": "hello, how are you today?"}],
+                        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert out["reply"] == "Hi there! Great to meet you."
+    assert out["facilities"] == []
+
+
+@pytest.mark.asyncio
+async def test_muse_factual_answer_with_tool_results_stays_grounded():
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return chat_response(tool_calls=[
+                _tool_call("c1", "search_facilities", {"city": "Casablanca"})])
+        return chat_response(content="Invented Parking Palace: 1 MAD/h, 999 spaces free!")
+
+    out = await configured(handler).ask(
+        messages=[{"role": "user", "content": "parking in Casablanca"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert "Invented" not in out["reply"] and "999" not in out["reply"]
+    assert "Casa Marina Parking" in out["reply"] and "12.00" in out["reply"]
+    assert [f["id"] for f in out["facilities"]] == [FACILITY["id"]]
+
+
+# ------------------------------------------------------- retry / error policy
+
+def _record_sleeps(monkeypatch):
+    """Replace asyncio.sleep with a recorder so backoff timing is asserted
+    without the test suite actually waiting."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return sleeps
+
+
+@pytest.mark.asyncio
+async def test_muse_429_honors_numeric_retry_after(monkeypatch):
+    sleeps = _record_sleeps(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "7"},
+                                  json={"error": {"message": "slow down", "type": "rate_limit_error",
+                                                  "param": None, "code": "rate_limited"}})
+        return chat_response(content="recovered")
+
+    out = await configured(handler).ask(
+        messages=[{"role": "user", "content": "hi"}], executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert out["reply"] == "recovered" and calls["n"] == 2
+    assert len(sleeps) == 1 and 7.0 <= sleeps[0] <= 30.0  # Retry-After wins, capped
+
+
+@pytest.mark.asyncio
+async def test_muse_429_honors_http_date_retry_after(monkeypatch):
+    sleeps = _record_sleeps(monkeypatch)
+    calls = {"n": 0}
+    retry_at = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=12), usegmt=True)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": retry_at}, json={})
+        return chat_response(content="recovered")
+
+    out = await configured(handler).ask(
+        messages=[{"role": "user", "content": "hi"}], executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert out["reply"] == "recovered" and calls["n"] == 2
+    assert len(sleeps) == 1 and 9.0 <= sleeps[0] <= 30.0  # ~12s from the HTTP-date, capped
+
+
+@pytest.mark.asyncio
+async def test_muse_429_without_retry_after_uses_exponential_backoff(monkeypatch):
+    sleeps = _record_sleeps(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return httpx.Response(429, json={})
+        return chat_response(content="recovered")
+
+    out = await configured(handler).ask(
+        messages=[{"role": "user", "content": "hi"}], executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert out["reply"] == "recovered" and calls["n"] == 3
+    assert len(sleeps) == 2
+    assert 0.5 <= sleeps[0] <= 0.65  # 0.5s base + bounded jitter
+    assert sleeps[1] >= 1.0 and sleeps[1] > sleeps[0]  # exponential growth
+
+
+@pytest.mark.asyncio
+async def test_muse_503_and_500_are_retried(monkeypatch):
+    _record_sleeps(monkeypatch)
+    for status in (500, 503):
+        calls = {"n": 0}
+
+        def handler(req: httpx.Request, status=status, calls=calls) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(status, headers={"Retry-After": "3"}, json={})
+            return chat_response(content="recovered")
+
+        out = await configured(handler).ask(
+            messages=[{"role": "user", "content": "hi"}], executor=ToolExecutor(FakeInventory(), "jwt"))
+        assert out["reply"] == "recovered" and calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_muse_504_is_not_retried(monkeypatch):
+    _record_sleeps(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(504, json={})
+
+    svc = configured(handler)  # default retries=2 — must still fire exactly once
+    with pytest.raises(ProviderTimeout) as ei:
+        await svc.ask(messages=[{"role": "user", "content": "hi"}],
+                      executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert ei.value.code == "provider_timeout"  # typed -> API grounded fallback
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_muse_client_errors_are_not_retried(monkeypatch):
+    _record_sleeps(monkeypatch)
+    expected = {400: InvalidProviderResponse, 401: ProviderUnavailable,
+                402: InvalidProviderResponse, 403: ProviderUnavailable,
+                404: InvalidProviderResponse, 413: InvalidProviderResponse}
+    for status, exc_type in expected.items():
+        calls = {"n": 0}
+
+        def handler(req: httpx.Request, status=status, calls=calls) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(status, json={})
+
+        with pytest.raises(exc_type):
+            await configured(handler).ask(
+                messages=[{"role": "user", "content": "hi"}],
+                executor=ToolExecutor(FakeInventory(), "jwt"))
+        assert calls["n"] == 1, f"HTTP {status} must not be retried"
+
+
+@pytest.mark.asyncio
+async def test_muse_malformed_success_response_is_not_retried(monkeypatch):
+    _record_sleeps(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, text="this is not json")
+
+    with pytest.raises(InvalidProviderResponse):
+        await configured(handler).ask(
+            messages=[{"role": "user", "content": "hi"}], executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_muse_structured_error_body_is_logged_not_shown(caplog):
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {
+            "message": "max_completion_tokens is invalid", "type": "invalid_request_error",
+            "param": "max_completion_tokens", "code": "invalid_parameter"}})
+
+    with caplog.at_level(logging.WARNING, logger="parkspot.meta.muse"):
+        with pytest.raises(InvalidProviderResponse) as ei:
+            await configured(handler).ask(
+                messages=[{"role": "user", "content": "hi"}],
+                executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert ei.value.code == "invalid_provider_response"
+    assert "invalid_parameter" in str(ei.value)  # code safely surfaced
+    assert "max_completion_tokens is invalid" not in str(ei.value)  # provider prose not user-facing
+    assert "invalid_request_error" in caplog.text and "invalid_parameter" in caplog.text
+    assert "max_completion_tokens" in caplog.text  # param logged for diagnostics
+    assert "test-key" not in caplog.text  # never the credential
+
+
+@pytest.mark.asyncio
+async def test_muse_malformed_error_bodies_are_safe():
+    cases = [
+        (500, {"text": "<html>gateway oops</html>"}, ProviderUnavailable),  # non-JSON body
+        (400, {"json": {"error": "oops-string"}}, InvalidProviderResponse),  # wrong shape
+        (429, {"json": ["not", "an", "object"]}, ProviderUnavailable),
+    ]
+    for status, kwargs, exc_type in cases:
+        svc = configured(lambda req, s=status, k=kwargs: httpx.Response(s, **k),
+                         provider_max_retries=0)
+        with pytest.raises(exc_type):
+            await svc.ask(messages=[{"role": "user", "content": "hi"}],
+                          executor=ToolExecutor(FakeInventory(), "jwt"))
+
+
+class _SlowToolTransport(httpx.AsyncBaseTransport):
+    """Every request takes 0.15s and asks for another tool round, forever."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        await asyncio.sleep(0.15)
+        return chat_response(tool_calls=[_tool_call("c1", "search_facilities", {"city": "Casablanca"})])
+
+
+@pytest.mark.asyncio
+async def test_muse_overall_deadline_bounds_all_tool_rounds():
+    slow = _SlowToolTransport()
+    svc = MuseSparkService(
+        Settings(meta_model_api_key="k", muse_spark_model="m",
+                 provider_max_retries=0, provider_total_timeout_s=0.4),
+        transport=slow)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(ProviderTimeout) as ei:
+        await svc.ask(messages=[{"role": "user", "content": "parking in Casablanca"}],
+                      executor=ToolExecutor(FakeInventory(), "jwt"))
+    elapsed = asyncio.get_running_loop().time() - started
+    assert ei.value.code == "provider_timeout"
+    assert slow.calls >= 2  # several rounds happened — the deadline, not the round cap, stopped it
+    assert elapsed < 5  # and it stopped promptly, not after every possible retry
+
+
+@pytest.mark.asyncio
+async def test_muse_deadline_timeout_reaches_grounded_fallback():
+    slow = _SlowToolTransport()
+    svc = MuseSparkService(
+        Settings(meta_model_api_key="k", muse_spark_model="m",
+                 provider_max_retries=0, provider_total_timeout_s=0.3),
+        transport=slow)
+    with pytest.raises(ProviderTimeout) as ei:
+        await svc.ask(messages=[{"role": "user", "content": "parking in Casablanca"}],
+                      executor=ToolExecutor(FakeInventory(), "jwt"))
+    # api.py catches MetaError and re-asks the grounded assistant with a
+    # fresh executor — replicate exactly that contract here.
+    assert isinstance(ei.value, MetaError)
+    out = await GroundedAssistant().ask(
+        messages=[{"role": "user", "content": "parking in Casablanca"}],
+        executor=ToolExecutor(FakeInventory(), "jwt"), lang="en")
+    assert "Casa Marina Parking" in out["reply"]
+    assert [f["id"] for f in out["facilities"]] == [FACILITY["id"]]
+
+
+def test_retry_and_timeout_config_is_clamped(monkeypatch):
+    # Defaults preserved.
+    d = Settings()
+    assert (d.provider_timeout_s, d.provider_max_retries, d.provider_total_timeout_s) == (30.0, 2, 90.0)
+    monkeypatch.setenv("META_MAX_RETRIES", "99")
+    monkeypatch.setenv("META_TIMEOUT_S", "99999")
+    monkeypatch.setenv("META_TOTAL_TIMEOUT_S", "99999")
+    s = Settings.from_env()
+    assert s.provider_max_retries == 4 and s.provider_timeout_s == 120.0
+    assert s.provider_total_timeout_s == 300.0
+    monkeypatch.setenv("META_MAX_RETRIES", "-3")
+    monkeypatch.setenv("META_TIMEOUT_S", "0")
+    monkeypatch.setenv("META_TOTAL_TIMEOUT_S", "1")
+    s = Settings.from_env()
+    assert s.provider_max_retries == 0 and s.provider_timeout_s == 1.0
+    assert s.provider_total_timeout_s == 10.0
 
 
 # ---------------------------------------------------------------------- tools
@@ -156,6 +637,65 @@ async def test_nearby_tool_needs_shared_location_and_uses_real_coords():
     out = await with_loc.execute("search_nearby_facilities", {"radius_km": 5})
     assert [f["id"] for f in out["facilities"]] == ["near-1"]
     assert out["facilities"][0]["distance_meters"] < 1000
+
+
+# ------------------------------------------- authorized-capacity (Option A)
+
+def test_effective_available_clamps_to_authorized_capacity():
+    # Stale counter above the ParkSpot-authorized ceiling is clamped down.
+    assert effective_available({"available": 50, "capacity": 120, "authorized_capacity": 10}) == 10
+    # Zero authorized capacity means nothing is sellable, whatever the counter says.
+    assert effective_available({"available": 14, "capacity": 120, "authorized_capacity": 0}) == 0
+    # Pre-0001 rows without authorized_capacity fall back to legacy capacity.
+    assert effective_available({"available": 14, "capacity": 120}) == 14
+    assert effective_available({"available": 500, "capacity": 120, "authorized_capacity": None}) == 120
+    # Negative counters never surface; missing counters read as zero.
+    assert effective_available({"available": -3, "capacity": 120, "authorized_capacity": 10}) == 0
+    assert effective_available({"capacity": 120, "authorized_capacity": 10}) == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_availability_never_exceeds_authorized_capacity():
+    row = {**FACILITY, "available": 50, "capacity": 120, "authorized_capacity": 10}
+    ex = ToolExecutor(FakeInventory([row], facility=row), "jwt")
+    out = await ex.execute("search_facilities", {"city": "Casablanca"})
+    assert out["facilities"][0]["available"] == 10
+    # "capacity" shown to the model is the authorized figure, not physical.
+    assert out["facilities"][0]["capacity"] == 10
+    out = await ex.execute("check_availability", {"facility_id": row["id"]})
+    assert out == {"found": True, "facility_id": row["id"], "available": 10, "capacity": 10}
+
+
+@pytest.mark.asyncio
+async def test_tool_zero_authorized_capacity_reports_zero_available():
+    row = {**FACILITY, "available": 14, "capacity": 120, "authorized_capacity": 0}
+    ex = ToolExecutor(FakeInventory([row], facility=row), "jwt")
+    out = await ex.execute("check_availability", {"facility_id": row["id"]})
+    assert out["available"] == 0 and out["capacity"] == 0
+
+
+@pytest.mark.asyncio
+async def test_inventory_search_normalizes_and_drops_zero_authorized():
+    rows = [
+        {**FACILITY, "id": "zero-auth", "available": 9, "capacity": 120, "authorized_capacity": 0},
+        {**FACILITY, "id": "inflated", "available": 50, "capacity": 120, "authorized_capacity": 10},
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        id_filter = req.url.params.get("id", "")
+        if id_filter.startswith("eq."):
+            return httpx.Response(200, json=[r for r in rows if r["id"] == id_filter[3:]])
+        return httpx.Response(200, json=rows)
+
+    s = Settings(supabase_url="http://inventory.test", supabase_publishable_key="test-key")
+    inv = Inventory(s, transport=httpx.MockTransport(handler))
+    found = await inv.search_facilities(user_jwt="jwt")
+    # The zero-authorized facility passes the raw PostgREST `available >= 1`
+    # filter but must not surface as bookable after normalization.
+    assert [r["id"] for r in found] == ["inflated"]
+    assert found[0]["available"] == 10
+    one = await inv.get_facility("inflated", user_jwt="jwt")
+    assert one is not None and one["available"] == 10
 
 
 # ------------------------------------------------------------------- SAM 3.1

@@ -13,8 +13,14 @@ export function authErrorKey(err: unknown): AuthErrorKey | null {
   const e = err as { code?: string; message?: string } | null;
   const code = e?.code ?? "";
   const msg = (e?.message ?? "").toLowerCase();
-  if (code === "invalid_credentials" || msg.includes("invalid login credentials")) return "invalidCredentials";
-  if (code === "user_already_exists" || msg.includes("already registered") || msg.includes("already been registered")) return "accountExists";
+  if (code === "invalid_credentials" || msg.includes("invalid login credentials"))
+    return "invalidCredentials";
+  if (
+    code === "user_already_exists" ||
+    msg.includes("already registered") ||
+    msg.includes("already been registered")
+  )
+    return "accountExists";
   return null;
 }
 
@@ -38,15 +44,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let alive = true;
 
     const loadRoles = (u: User | null) => {
-      if (!u) { rolesFor.current = null; setRoles([]); return; }
+      if (!u) {
+        rolesFor.current = null;
+        setRoles([]);
+        return;
+      }
       if (rolesFor.current === u.id) return;
       rolesFor.current = u.id;
       // Deferred: awaiting Supabase calls inside onAuthStateChange can deadlock
       // on the auth lock, so role loading runs after the callback returns.
       setTimeout(() => {
         if (!alive) return;
-        void supabase.from("user_roles").select("role").eq("user_id", u.id)
-          .then(({ data }) => { if (alive && rolesFor.current === u.id) setRoles((data ?? []).map((r) => r.role)); });
+        void supabase
+          .from("user_roles")
+          .select("role")
+          .eq("user_id", u.id)
+          .then(({ data }) => {
+            if (alive && rolesFor.current === u.id) setRoles((data ?? []).map((r) => r.role));
+          });
       }, 0);
     };
 
@@ -58,18 +73,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const u = session?.user ?? null;
       setUser(u);
       setLoading(false);
-      if (event === "SIGNED_OUT") { loadRoles(null); qc.clear(); return; }
+      if (event === "SIGNED_OUT") {
+        loadRoles(null);
+        qc.clear();
+        return;
+      }
       loadRoles(u);
       if (event === "SIGNED_IN" || event === "USER_UPDATED") qc.invalidateQueries();
     });
 
     // Fallback: if INITIAL_SESSION somehow never arrives, stop loading instead
     // of leaving gated pages blank forever. INITIAL_SESSION sets the user.
-    void supabase.auth.getSession()
-      .then(() => { if (alive) setLoading(false); })
-      .catch(() => { if (alive) setLoading(false); });
+    void supabase.auth
+      .getSession()
+      .then(() => {
+        if (alive) setLoading(false);
+      })
+      .catch(() => {
+        if (alive) setLoading(false);
+      });
 
-    return () => { alive = false; sub.subscription.unsubscribe(); };
+    return () => {
+      alive = false;
+      sub.subscription.unsubscribe();
+    };
   }, [qc]);
 
   return <AuthCtx.Provider value={{ user, loading, roles }}>{children}</AuthCtx.Provider>;

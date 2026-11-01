@@ -73,15 +73,15 @@ def _int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Settings:
-    # --- Muse Spark / Meta model API (OpenAI-compatible chat completions) ---
+    # --- Muse Spark / Meta model API (Chat Completions) ---
     # META_BASE_URL + MODEL_API_KEY follow the Meta Model API configuration
     # supplied for this project (default: https://api.meta.ai/v1).
-    # MUSE_SPARK_MODEL must be the exact model identifier from Meta's docs
-    # for your account. There is intentionally NO hardcoded chat model id:
-    # inventing one would mean claiming an integration that may not exist.
+    # MUSE_SPARK_MODEL defaults to the documented muse-spark-1.3
+    # (muse-spark-1.2 / muse-spark-1.1 are also documented); set the env
+    # var to override it for your Meta developer account.
     meta_model_api_key: str | None = None
     meta_base_url: str = "https://api.meta.ai/v1"
-    muse_spark_model: str | None = None
+    muse_spark_model: str | None = "muse-spark-1.3"
 
     # --- SAM 3.1 vision (self-hosted inference service) ---
     # Meta publishes SAM 3/3.1 as open weights (facebookresearch/sam3,
@@ -111,6 +111,7 @@ class Settings:
     # --- Hardening knobs ---
     provider_timeout_s: float = 30.0
     provider_max_retries: int = 2
+    provider_total_timeout_s: float = 90.0  # total deadline for one Muse ask(), tool rounds included
     max_image_bytes: int = 5 * 1024 * 1024
     ocr_min_confidence: float = 0.6
     rate_limit_per_minute: int = 30
@@ -121,7 +122,7 @@ class Settings:
         return cls(
             meta_model_api_key=_env("META_MODEL_API_KEY") or _env("MODEL_API_KEY"),
             meta_base_url=(_env("META_BASE_URL") or "https://api.meta.ai/v1").rstrip("/"),
-            muse_spark_model=_env("MUSE_SPARK_MODEL"),
+            muse_spark_model=_env("MUSE_SPARK_MODEL") or "muse-spark-1.3",
             sam_service_url=(_env("SAM_SERVICE_URL") or "").rstrip("/") or None,
             sam_model=_env("SAM_MODEL"),
             sam_service_api_key=_env("SAM_SERVICE_API_KEY"),
@@ -135,8 +136,12 @@ class Settings:
             nearby_max_radius_km=_float("NEARBY_SEARCH_MAX_RADIUS_KM", 50.0),
             supabase_url=(_env("SUPABASE_URL") or "").rstrip("/") or None,
             supabase_publishable_key=_env("SUPABASE_PUBLISHABLE_KEY"),
-            provider_timeout_s=_float("META_TIMEOUT_S", 30.0),
-            provider_max_retries=_int("META_MAX_RETRIES", 2),
+            # Clamp retry/timeout knobs to safe ranges: a mis-set env var
+            # must not turn one chat message into minutes of provider
+            # retries. Defaults are unchanged (30s / 2 retries / 90s total).
+            provider_timeout_s=min(120.0, max(1.0, _float("META_TIMEOUT_S", 30.0))),
+            provider_max_retries=min(4, max(0, _int("META_MAX_RETRIES", 2))),
+            provider_total_timeout_s=min(300.0, max(10.0, _float("META_TOTAL_TIMEOUT_S", 90.0))),
             ocr_min_confidence=_float("OCR_MIN_CONFIDENCE", 0.6),
             rate_limit_per_minute=_int("META_RATE_LIMIT_PER_MINUTE", 30),
         )

@@ -32,7 +32,9 @@ export function formatDistance(m: number, lang: "en" | "ar"): string {
 }
 
 /** One-time foreground position. Rejects with a typed GeoError — never invents coordinates. */
-export function getCurrentPositionOnce(timeoutMs = 12_000): Promise<{ lat: number; lng: number; accuracy?: number }> {
+export function getCurrentPositionOnce(
+  timeoutMs = 12_000,
+): Promise<{ lat: number; lng: number; accuracy?: number }> {
   return new Promise((resolve, reject) => {
     if (typeof window === "undefined" || !("geolocation" in navigator)) {
       reject(new GeoError("unsupported"));
@@ -43,7 +45,12 @@ export function getCurrentPositionOnce(timeoutMs = 12_000): Promise<{ lat: numbe
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+      (pos) =>
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        }),
       (err) => {
         if (err.code === err.PERMISSION_DENIED) reject(new GeoError("denied"));
         else if (err.code === err.TIMEOUT) reject(new GeoError("timeout"));

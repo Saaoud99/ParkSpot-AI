@@ -27,12 +27,23 @@
 --      authorized capacity, cancellations restore availability only up to
 --      authorized capacity. Additive — changes no data.
 --
---   4. scripts/seed_demo_users.sql  (optional, demo only)
+--   4. drizzle/migrations/0003_authorized_availability.sql
+--      Hardens the same model with real counts: create_booking counts
+--      confirmed bookings under the facility row lock and rejects
+--      FACILITY_FULL at the authorized ceiling regardless of the
+--      `available` counter; cancellations take the same lock and restore
+--      one space capped by the authorized remaining; a SECURITY DEFINER
+--      trigger clamps `available` when authorized/total capacity changes;
+--      a one-time repair only LOWERS inflated counters (never raises).
+--      Additive — function replacements, one trigger, one index.
+--
+--   5. scripts/seed_demo_users.sql  (optional, demo only)
 --      Creates admin@demo.test / partner@demo.test / driver@demo.test.
 --      Demo-only passwords — delete before real users get access.
 --
 -- Each migration is safe to run in order on an empty project. Existing
 -- records are never modified by these migrations (0001 backfills the new
--- capacity columns from the legacy `capacity` value; 0002 only replaces
--- two function definitions).
+-- capacity columns from the legacy `capacity` value; 0002/0003 only
+-- replace function definitions, and 0003's repair can only lower an
+-- inflated `available` counter toward the authorized ceiling).
 -- ═══════════════════════════════════════════════════════════════════════════

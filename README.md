@@ -204,10 +204,13 @@ ParkSpot-AI/
 │   │                            bookings, transactions + demo_topup/create_booking/cancel_booking
 │   ├── 0001_admin.sql         ← admin: audit_logs, cameras, incidents, app_settings,
 │   │                            capacity columns, admin_adjust_wallet, admin RLS policies
-│   └── 0002_booking_capacity_guard.sql
+│   ├── 0002_booking_capacity_guard.sql
 │                              ← booking functions enforce `active` + authorised capacity
+│   └── 0003_authorized_availability.sql
+│                              ← confirmed-booking count ceiling, locked cancellations,
+│                                capacity-change clamp trigger, lower-only counter repair
 ├── scripts/
-│   ├── setup_new_db.sql       ← pointer to the canonical migration order (0000→0001→0002)
+│   ├── setup_new_db.sql       ← pointer to the canonical migration order (0000→0001→0002→0003)
 │   └── seed_demo_users.sql    ← demo accounts/seed helpers
 ├── supabase/config.toml       ← local Supabase config
 ├── tests/
@@ -271,6 +274,16 @@ bookings, so a project must exist and be migrated:
      deactivated facilities (`FACILITY_INACTIVE`), never exceed
      authorised capacity, and cancellations restore availability only
      up to authorised capacity. Additive: it changes no data.
+   - [`drizzle/migrations/0003_authorized_availability.sql`](drizzle/migrations/0003_authorized_availability.sql)
+     — hardens the same model with real counts: `create_booking` counts
+     confirmed bookings under the facility row lock and rejects
+     `FACILITY_FULL` at the authorised ceiling regardless of the
+     `available` counter; cancellations take the same lock and restore
+     one space capped by the authorised remaining; a `SECURITY DEFINER`
+     trigger clamps `available` whenever authorised/total capacity
+     changes; a one-time repair only **lowers** inflated counters
+     (never raises, so manual availability corrections survive).
+     Additive: function replacements, one trigger, one index.
    - Optionally [`scripts/seed_demo_users.sql`](scripts/seed_demo_users.sql)
      for demo users.
 3. Copy your project URL + publishable key into the frontend env (next
@@ -339,7 +352,7 @@ returns feature *flags*, never keys.
 |---|---|---|
 | `MODEL_API_KEY` | — | Meta Model API key (Muse Spark + voice). Backend only. |
 | `META_BASE_URL` | `https://api.meta.ai/v1` | Meta Model API base URL. |
-| `MUSE_SPARK_MODEL` | *(none, intentionally)* | **Exact** chat model id from your Meta developer account. No public id is published by Meta, so none is hardcoded — inventing one would fake the integration. Unset → the assistant runs in honestly-labeled grounded fallback mode over real inventory. |
+| `MUSE_SPARK_MODEL` | `muse-spark-1.3` | Documented chat model id (`muse-spark-1.3` default; `muse-spark-1.2` / `muse-spark-1.1` also documented). Set it to override the default for your Meta developer account. Without `MODEL_API_KEY` the assistant runs in honestly-labeled grounded fallback mode over real inventory. |
 | `SAM_SERVICE_URL` / `SAM_MODEL` / `SAM_SERVICE_API_KEY` | — | Your self-hosted SAM 3.1 inference service (`POST /segment`). Meta ships SAM as open weights — there is no Meta-hosted SAM API key. |
 | `MUSE_VOICE_ENABLED` | `false` | Master switch for voice transcription. |
 | `META_VOICE_API_KEY` / `META_VOICE_BASE_URL` / `MUSE_VOICE_MODEL` | `…/v1` / `muse-voice-transcribe-1.0` | Voice endpoint + model (confirm in your Meta account before going live). |
@@ -347,6 +360,7 @@ returns feature *flags*, never keys.
 | `NEARBY_SEARCH_DEFAULT_RADIUS_KM` / `NEARBY_SEARCH_MAX_RADIUS_KM` | `5` / `50` | GPS nearby-search radius bounds. |
 | `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` | — | Same Supabase project as the frontend; the backend uses it **with the caller's own JWT** (no service-role key is configured or used in this project). |
 | `META_TIMEOUT_S` / `META_MAX_RETRIES` / `META_RATE_LIMIT_PER_MINUTE` | `30` / `2` / `30` | Provider timeout, retries, per-user rate limit. |
+| `META_TOTAL_TIMEOUT_S` | `90` | Total deadline for one assistant request, tool rounds included (clamped to 10–300 s). |
 | `OCR_MIN_CONFIDENCE` | `0.6` | Plate reads below this confidence are rejected. |
 | `META_CORS_ORIGINS` | `*` | Comma-separated CORS allow-list. Tighten in production. |
 
@@ -450,9 +464,21 @@ then makes the booking functions enforce that model (see below).
   also rejects deactivated facilities (`FACILITY_INACTIVE`) and treats
   a facility as full when `LEAST(available, authorized_capacity) < 1`;
   cancellations restore availability only up to authorised capacity
-  (`LEAST(authorized_capacity, available + 1)`). The AI assistant can
-  never override this — it has no booking tool at all; the database
-  makes the final booking/access decision.
+  (`LEAST(authorized_capacity, available + 1)`). Migration `0003`
+  strengthens this further: `create_booking` counts the facility's
+  confirmed bookings while holding its row lock and rejects
+  `FACILITY_FULL` once confirmed bookings reach the authorised
+  capacity — so even a stale or manually raised `available` counter
+  can never oversell; both cancellation paths take the same facility
+  lock before restoring one space, capped by the authorised remaining
+  computed from the real count; and a `SECURITY DEFINER` trigger
+  clamps `available` down whenever authorised/total capacity is
+  reduced. `available` itself remains a live operational correction
+  owned by Ops (see `/ops`): a cancellation returns one space to sale,
+  so a manually reduced figure can rise again as bookings cancel —
+  that behaviour is accepted and documented in the Operations screen.
+  The AI assistant can never override any of this — it has no booking
+  tool at all; the database makes the final booking/access decision.
 - RLS everywhere: users read only their own profile/wallet/bookings/
   transactions; facilities are publicly readable, writable only by
   `admin`/`partner`.
@@ -499,7 +525,7 @@ working either way.
 
 | Feature | Status |
 |---|---|
-| **Muse Spark assistant** | OpenAI-compatible Chat Completions client with controlled tool calling (tools above). Needs `MODEL_API_KEY` + the exact `MUSE_SPARK_MODEL` from your Meta developer account — Meta has not published a public Muse Spark developer model id, so none is hardcoded or invented. Live calls have **not** been tested from this repo's environment (no Meta credentials available here); the client is covered by mocked-transport tests. |
+| **Muse Spark assistant** | Chat Completions client with controlled tool calling (tools above). Needs `MODEL_API_KEY`; `MUSE_SPARK_MODEL` defaults to the documented `muse-spark-1.3` (`muse-spark-1.2` / `muse-spark-1.1` also documented) and can be overridden per Meta developer account. Live calls have **not** been tested from this repo's environment (no Meta credentials available here); the client is covered by mocked-transport tests. |
 | **Grounded fallback assistant** | Deterministic, rule-based parking assistant (`app/meta/services/grounded.py` + `src/lib/assistantCore.ts`) over the same real inventory tools. Parses city/feature/price/hours/refund/wallet/“near me” intents in English and Arabic, answers only with real facilities and server-computed prices, and is always labeled (`mode: "grounded_fallback"`, UI badge). It never guesses a location and never claims to be the LLM. |
 | **SAM 3.1 vision** | Open weights ([facebookresearch/sam3](https://github.com/facebookresearch/sam3), `facebook/sam3` on Hugging Face) — no Meta-hosted SAM cloud API key exists. Deploy the weights yourself, set `SAM_SERVICE_URL`/`SAM_MODEL`, and the ops camera panel works. SAM only *locates* vehicles/plates; it never reads text and never grants access alone. |
 | **EasyOCR plates** | Separate OCR step (optional, `requirements-vision.txt`). Reads below `OCR_MIN_CONFIDENCE` are rejected; access requires a matching real booking in the database. |
@@ -518,8 +544,9 @@ service-role key is configured or used anywhere in this project
 file would read one from env, but nothing imports it and the variable
 is never set).
 
-**One-time setup:** run `drizzle/migrations/0001_admin.sql` (and then
-`0002_booking_capacity_guard.sql`) in the Supabase SQL Editor (see
+**One-time setup:** run `drizzle/migrations/0001_admin.sql`, then
+`0002_booking_capacity_guard.sql`, then
+`0003_authorized_availability.sql` in the Supabase SQL Editor (see
 [Quick start](#2--supabase-database--auth--required)).
 
 Sections: Overview (real counts, bookings-per-day chart, status mix) ·
@@ -550,7 +577,7 @@ Exact commands, in order. Everything below runs locally with the
 seeded data — no Meta credentials needed for steps 1–7.
 
 ```sh
-# 1. Database: run 0000 → 0001 → 0002 in the Supabase SQL Editor.
+# 1. Database: run 0000 → 0001 → 0002 → 0003 in the Supabase SQL Editor.
 # 2. Backend (grounded mode works with zero secrets):
 uvicorn app.meta.api:app --port 8000 --host 0.0.0.0
 # 3. Frontend (second terminal):
@@ -662,6 +689,7 @@ preset, which already includes TanStack, React, Tailwind, Nitro and the
 | “Backend not connected” / assistant unavailable | Backend not running or `VITE_META_API_URL` unset/wrong. Start `uvicorn app.meta.api:app --port 8000` and restart the frontend with the var set. With the backend up but no Meta credentials, the assistant answers in labeled grounded mode. Booking/search work without the backend. |
 | Admin page shows database errors | Migration `0001_admin.sql` not run yet on this database. The backend needs it too (capacity columns). |
 | Bookings ignore authorised capacity / deactivated facility still bookable | Migration `0002_booking_capacity_guard.sql` not run yet. |
+| A facility oversells past authorised capacity, or a capacity cut is not reflected in `available` | Migration `0003_authorized_availability.sql` not run yet (it adds the confirmed-booking count ceiling, the locked cancellation restore, and the capacity-change clamp trigger). |
 | Mic / GPS “unavailable” on a phone | Insecure origin: browsers require HTTPS (or `localhost`) for microphone and geolocation. Use an HTTPS tunnel or deploy. |
 | Voice button errors immediately | Voice is off by default: set `MUSE_VOICE_ENABLED=true` + a model API key on the **backend**, and make sure FFmpeg is installed there. |
 | Map is grey / tiles missing | Leaflet CSS + OpenStreetMap tiles load from CDNs — check network/CSP. |

@@ -23,7 +23,10 @@ function NotFoundComponent() {
         <h1 className="text-7xl font-bold text-foreground">404</h1>
         <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
         <div className="mt-6">
-          <Link to="/home" className="inline-flex items-center justify-center rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground">
+          <Link
+            to="/home"
+            className="inline-flex items-center justify-center rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground"
+          >
             Go home
           </Link>
         </div>
@@ -41,11 +44,25 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
-        <h1 className="text-xl font-semibold tracking-tight text-foreground">This page didn't load</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Something went wrong. Try again or head back home.</p>
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">
+          This page didn't load
+        </h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Something went wrong. Try again or head back home.
+        </p>
         <div className="mt-6 flex flex-wrap justify-center gap-2">
-          <button onClick={() => { router.invalidate(); reset(); }} className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Try again</button>
-          <a href="/home" className="rounded-full border px-4 py-2 text-sm font-medium">Go home</a>
+          <button
+            onClick={() => {
+              router.invalidate();
+              reset();
+            }}
+            className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+          >
+            Try again
+          </button>
+          <a href="/home" className="rounded-full border px-4 py-2 text-sm font-medium">
+            Go home
+          </a>
         </div>
       </div>
     </div>
@@ -59,7 +76,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { name: "theme-color", content: "#1f5a3f" },
       { title: "ParkSpot AI — Smarter Parking. Easier Journeys." },
-      { name: "description", content: "Find, book and pay for parking in Morocco with ParkSpot Wallet and an AI assistant." },
+      {
+        name: "description",
+        content:
+          "Find, book and pay for parking in Morocco with ParkSpot Wallet and an AI assistant.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -67,7 +88,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "stylesheet", href: appCss },
       { rel: "icon", type: "image/png", href: "/favicon.png" },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Noto+Kufi+Arabic:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Noto+Kufi+Arabic:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap",
+      },
       { rel: "stylesheet", href: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" },
     ],
   }),

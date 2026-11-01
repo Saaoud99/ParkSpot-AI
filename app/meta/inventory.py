@@ -15,6 +15,33 @@ from .errors import NotConfigured, ProviderUnavailable
 FACILITY_FIELDS = "id,name,name_ar,city,address,lat,lng,price_per_hour_cents,available,capacity,authorized_capacity,total_capacity,active,features,rating,open_24h"
 
 
+def effective_available(row: dict) -> int:
+    """Read-side availability normalization (Phase 4, Option A).
+
+    The displayed/sellable figure can never exceed the ParkSpot-authorized
+    capacity (``authorized_capacity``, falling back to the legacy
+    ``capacity`` on pre-0001 rows). This is a display/search clamp only:
+    it cannot subtract confirmed bookings, because inventory reads run
+    under the caller's own JWT/RLS. The authoritative enforcement is the
+    confirmed-booking count guard inside the SQL ``create_booking``
+    function (migration 0003).
+    """
+    raw = row.get("available")
+    try:
+        available = int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        available = 0
+    authorized = row.get("authorized_capacity")
+    if authorized is None:
+        authorized = row.get("capacity")
+    if authorized is None:
+        return max(0, available)
+    try:
+        return max(0, min(available, int(authorized)))
+    except (TypeError, ValueError):
+        return max(0, available)
+
+
 class Inventory:
     def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
         self._s = settings
@@ -46,8 +73,12 @@ class Inventory:
 
     @staticmethod
     def _bookable(rows: list[dict]) -> list[dict]:
-        """Only facilities an admin has not deactivated are bookable inventory."""
-        return [r for r in rows if r.get("active", True) is not False]
+        """Only facilities an admin has not deactivated are bookable inventory.
+
+        Rows are returned as copies with ``available`` normalized to the
+        authorized-capacity ceiling (see :func:`effective_available`).
+        """
+        return [{**r, "available": effective_available(r)} for r in rows if r.get("active", True) is not False]
 
     async def search_facilities(self, *, city: str | None = None, feature: str | None = None,
                                 max_price_cents: int | None = None, min_available: int = 1,
@@ -60,7 +91,11 @@ class Inventory:
             params["features"] = f"cs.{{{feature}}}"
         if max_price_cents is not None:
             params["price_per_hour_cents"] = f"lte.{max_price_cents}"
-        return self._bookable(await self._get("/rest/v1/facilities", params, user_jwt))
+        rows = self._bookable(await self._get("/rest/v1/facilities", params, user_jwt))
+        # The PostgREST filter sees the raw counter; after normalization a
+        # row can fall below the threshold (e.g. authorized_capacity = 0
+        # with a stale positive counter) and must not surface as bookable.
+        return [r for r in rows if r["available"] >= max(0, min_available)]
 
     async def get_facility(self, facility_id: str, user_jwt: str | None = None) -> dict | None:
         rows = self._bookable(await self._get("/rest/v1/facilities",

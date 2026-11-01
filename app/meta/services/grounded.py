@@ -33,6 +33,9 @@ _CHEAPEST = ("cheapest", "cheap", "أرخص", "ارخص", "رخيص", "moins che
 _NEAR_ME = ("near me", "nearby", "closest", "قريب مني", "قريبة مني", "قريب", "près de moi", "proche de moi", "a proximite")
 _REFUND = ("refund", "cancel", "استرداد", "إلغاء", "الغاء", "rembours")
 _WALLET = ("wallet", "top up", "top-up", "balance", "محفظة", "رصيد", "شحن رصيد")
+_PARKING_WORDS = ("park", "space", "available", "availability", "book", "reserve", "reservation",
+                  "price", "cost", "tarif", "stationnement", "emplacement", "disponible",
+                  "موقف", "مواقف", "ركن", "متاح", "حجز", "احجز", "سعر", "أماكن", "اماكن")
 _ARABIC = re.compile(r"[؀-ۿ]")
 _PRICE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:mad|dh|dirham|درهم|د\.م)")
 _PRICE_UNDER = re.compile(r"(?:under|below|less than|أقل من|اقل من)\s*(\d+(?:[.,]\d+)?)")
@@ -48,6 +51,26 @@ def _find(text: str, table: dict) -> str | None:
 
 class GroundedAssistant:
     """Rule-based assistant over the same validated tools Muse uses."""
+
+    @staticmethod
+    def parking_intent(text: str) -> bool:
+        """True when the text asks about live parking inventory, pricing,
+        availability, amenities, or booking/refund policy.
+
+        Reuses this module's own intent tables and patterns (no extra LLM
+        call). The Muse path uses it as a server-side safeguard: a factual
+        parking question the model answered without its tools is answered
+        by this deterministic assistant instead of ungrounded prose.
+        Greetings and general conversation return False.
+        """
+        t = (text or "").lower()
+        if not t.strip():
+            return False
+        return bool(
+            _find(t, _CITIES) or _find(t, _FEATURES)
+            or any(w in t for w in _NEAR_ME + _CHEAPEST + _REFUND + _WALLET)
+            or _PRICE.search(t) or _HOURS.search(t)
+            or any(w in t for w in _PARKING_WORDS))
 
     async def ask(self, *, messages: list[dict], executor: ToolExecutor, lang: str = "en") -> dict:
         text_raw = next((str(m.get("content") or "") for m in reversed(messages) if m.get("role") == "user"), "")

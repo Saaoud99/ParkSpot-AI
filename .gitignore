@@ -32,4 +32,13 @@ dist-ssr
 *.sw?
 
 .env
+.env.*
+!.env.example
 .venv
+venv/
+
+# Python (FastAPI backend)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/

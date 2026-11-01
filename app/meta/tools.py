@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, ValidationError
 
 from .errors import ValidationFailed
-from .inventory import Inventory, quote_cents
+from .inventory import Inventory, effective_available, quote_cents
 
 ALLOWED_FEATURES = {"covered", "ev", "cctv", "valet"}
 ALLOWED_CITIES = {"Casablanca", "Rabat", "Marrakech", "Tangier"}
@@ -62,11 +62,19 @@ TOOL_DEFINITIONS = [
 
 
 def _public(f: dict) -> dict:
+    # The model (and therefore the grounded renderer and the UI cards) only
+    # ever sees availability clamped to the ParkSpot-authorized capacity,
+    # and "capacity" means that authorized figure — never the facility's
+    # total physical capacity. The authoritative ceiling is enforced again
+    # inside SQL create_booking (migration 0003); this is display truth.
+    authorized = f.get("authorized_capacity")
+    if authorized is None:
+        authorized = f["capacity"]
     return {
         "id": f["id"], "name": f["name"], "name_ar": f.get("name_ar"),
         "city": f["city"], "address": f["address"],
         "price_mad_per_hour": round(int(f["price_per_hour_cents"]) / 100, 2),
-        "available": f["available"], "capacity": f["capacity"],
+        "available": effective_available(f), "capacity": authorized,
         "features": f.get("features") or [], "rating": f.get("rating"),
     }
 
@@ -77,6 +85,7 @@ class ToolExecutor:
         self._jwt = user_jwt
         self._coords = coords  # device GPS supplied by the client — the model can never set this
         self.facilities_seen: dict[str, dict] = {}
+        self.quotes_seen: list[dict] = []  # verified server-computed quotes, in call order
 
     async def execute(self, name: str, raw_args: dict) -> dict:
         try:
@@ -121,8 +130,14 @@ class ToolExecutor:
                 if not f:
                     return {"found": False}
                 total = quote_cents(f, a.hours)
+                pub = _public(f)
+                self.facilities_seen[pub["id"]] = pub
+                quote = {"facility_id": f["id"], "facility_name": f["name"], "hours": a.hours,
+                         "total_mad": round(total / 100, 2), "currency": "MAD"}
+                if quote not in self.quotes_seen:
+                    self.quotes_seen.append(quote)
                 return {"found": True, "facility_id": f["id"], "hours": a.hours,
-                        "total_mad": round(total / 100, 2), "currency": "MAD"}
+                        "total_mad": quote["total_mad"], "currency": "MAD"}
         except ValidationError as e:
             raise ValidationFailed(f"Invalid tool arguments for {name}: {e.errors()[0]['msg'] if e.errors() else 'invalid'}")
         raise ValidationFailed(f"Unknown tool: {name}")
