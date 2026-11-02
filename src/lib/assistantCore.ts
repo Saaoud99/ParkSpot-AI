@@ -63,7 +63,7 @@ export function groundedReply(facilities: AssistantFacility[], message: string, 
   const feature = findFeature(text);
   if (feature) rows = rows.filter((f) => (f.features ?? []).includes(feature));
   const priceMatch = text.match(/(\d+(?:[.,]\d+)?)\s*(?:mad|dh|درهم)/) || text.match(/(?:under|below|less than|أقل من)\s*(\d+(?:[.,]\d+)?)/);
-  if (priceMatch) {
+  if (priceMatch && priceMatch[1]) {
     const max = Number(priceMatch[1].replace(",", ".")) * 100;
     rows = rows.filter((f) => f.price_per_hour_cents <= max);
   }
@@ -80,7 +80,7 @@ export function groundedReply(facilities: AssistantFacility[], message: string, 
   const hoursMatch = text.match(/(\d{1,2})\s*(?:h\b|hours?|ساعات|ساعة)/);
   const lines = rows.map((f) => `• ${f.name} (${f.city}) — ${(f.price_per_hour_cents / 100).toFixed(2)} ${ar ? "درهم/ساعة" : "MAD/h"}, ${f.available}/${f.capacity} ${ar ? "متاح" : "free"}`);
   let out = `${ar ? "إليك مواقف حقيقية متاحة الآن:" : "Here are real facilities available now:"}\n${lines.join("\n")}`;
-  if (hoursMatch) {
+  if (hoursMatch && hoursMatch[1] && rows[0]) {
     const hours = Math.max(1, Math.min(24, Number(hoursMatch[1])));
     out += `\n💰 ${hours}${ar ? " ساعة" : "h"} = ${((rows[0].price_per_hour_cents * hours) / 100).toFixed(2)} ${ar ? "درهم" : "MAD"} (${rows[0].name})`;
   }

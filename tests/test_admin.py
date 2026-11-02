@@ -565,3 +565,108 @@ def test_audit_endpoint_filters_by_action(env):
     r = client.get("/api/v1/admin/audit?action=user.suspend", headers=ADMIN)
     assert r.status_code == 200
     assert r.json()["entries"][0]["action"] == "user.suspend"
+
+
+# ------------------------------------------------------------------ database
+
+def test_database_tables_admin_only(env):
+    client, _ = env
+    assert client.get("/api/v1/admin/database", headers=DRIVER).status_code == 403
+    r = client.get("/api/v1/admin/database", headers=ADMIN)
+    assert r.status_code == 200
+    tables = {t["name"]: t for t in r.json()["tables"]}
+    assert tables["facilities"]["creatable"] is True
+    assert tables["bookings"]["read_only"] is True
+    assert tables["wallets"]["read_only"] is True
+    assert tables["audit_logs"]["read_only"] is True
+
+
+def test_database_rows_display(env):
+    client, _ = env
+    r = client.get("/api/v1/admin/database/facilities", headers=ADMIN)
+    assert r.status_code == 200
+    assert r.json()["rows"][0]["name"] == "Casa Marina"
+    assert r.json()["pk"] == "id"
+
+
+def test_database_unknown_table_422(env):
+    client, _ = env
+    assert client.get("/api/v1/admin/database/auth_users", headers=ADMIN).status_code == 422
+
+
+def test_database_edit_profile_writes_audit(env):
+    client, db = env
+    r = client.patch(f"/api/v1/admin/database/profiles/{DRIVER_ID}", headers=ADMIN,
+                     json={"data": {"display_name": "Driver Uno", "vehicle_plate": "99999C3"},
+                           "reason": "Fixed at front desk"})
+    assert r.status_code == 200
+    assert db.profiles[1]["display_name"] == "Driver Uno"
+    assert db.profiles[1]["vehicle_plate"] == "99999C3"
+    assert any(a["action"] == "database.update" and a["target_type"] == "profiles"
+               for a in db.audit_logs)
+
+
+def test_database_edit_requires_reason(env):
+    client, _ = env
+    r = client.patch(f"/api/v1/admin/database/profiles/{DRIVER_ID}", headers=ADMIN,
+                     json={"data": {"display_name": "X"}, "reason": "no"})
+    assert r.status_code == 422
+
+
+def test_database_bookings_read_only(env):
+    client, db = env
+    r = client.patch(f"/api/v1/admin/database/bookings/{BOOKING_ID}", headers=ADMIN,
+                     json={"data": {"status": "cancelled"}, "reason": "Trying direct edit"})
+    assert r.status_code == 422
+    assert db.bookings[0]["status"] == "confirmed"  # money path stays in the RPC
+
+
+def test_database_wallets_read_only(env):
+    client, db = env
+    r = client.patch(f"/api/v1/admin/database/wallets/{DRIVER_ID}", headers=ADMIN,
+                     json={"data": {"available_cents": 999999}, "reason": "Forge balance"})
+    assert r.status_code == 422
+    assert db.wallets[0]["available_cents"] == 5000
+
+
+def test_database_uneditable_field_rejected(env):
+    client, _ = env
+    r = client.patch(f"/api/v1/admin/database/profiles/{DRIVER_ID}", headers=ADMIN,
+                     json={"data": {"id": GHOST_ID}, "reason": "Rewrite primary key"})
+    assert r.status_code == 422
+
+
+def test_database_create_camera_and_facility_capacity_guard(env):
+    client, db = env
+    r = client.post("/api/v1/admin/database/cameras", headers=ADMIN,
+                    json={"data": {"label": "Gate B camera", "status": "active"}})
+    assert r.status_code == 200
+    assert db.cameras[-1]["label"] == "Gate B camera"
+    body = {"name": "Bad Park", "name_ar": "موقف", "city": "Rabat", "address": "Av. X",
+            "lat": 34.0, "lng": -6.8, "price_per_hour_cents": 1000,
+            "total_capacity": 10, "authorized_capacity": 20, "available": 5}
+    r = client.post("/api/v1/admin/database/facilities", headers=ADMIN, json={"data": body})
+    assert r.status_code == 422
+    assert "exceed total" in r.json()["error"]["message"]
+
+
+def test_update_profile_endpoint(env):
+    client, db = env
+    r = client.patch(f"/api/v1/admin/users/{DRIVER_ID}/profile", headers=ADMIN,
+                     json={"phone": "+212611111111", "reason": "User request"})
+    assert r.status_code == 200
+    assert db.profiles[1]["phone"] == "+212611111111"
+    assert any(a["action"] == "user.update" for a in db.audit_logs)
+
+
+def test_incident_full_edit(env):
+    client, db = env
+    client.post("/api/v1/admin/incidents", headers=ADMIN,
+                json={"kind": "user_report", "title": "Gate blocked"})
+    inc_id = db.incidents[0]["id"]
+    r = client.patch(f"/api/v1/admin/incidents/{inc_id}", headers=ADMIN,
+                     json={"title": "Gate blocked by delivery van", "status": "investigating",
+                           "reason": "Triaging report"})
+    assert r.status_code == 200
+    assert db.incidents[0]["title"] == "Gate blocked by delivery van"
+    assert db.incidents[0]["status"] == "investigating"

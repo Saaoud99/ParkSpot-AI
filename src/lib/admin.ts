@@ -11,7 +11,8 @@ async function call(path: string, init?: RequestInit) {
 }
 
 const get = (p: string) => call(p);
-const post = (p: string, body?: unknown) => call(p, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+const post = (p: string, body?: unknown) =>
+  call(p, body !== undefined ? { method: "POST", body: JSON.stringify(body) } : { method: "POST" });
 const patch = (p: string, body: unknown) => call(p, { method: "PATCH", body: JSON.stringify(body) });
 
 export const adminApi = {
@@ -26,6 +27,7 @@ export const adminApi = {
   updateFacility: (id: string, body: unknown) => patch(`/facilities/${id}`, body),
   setPrice: (id: string, price_per_hour_cents: number, reason: string) => patch(`/facilities/${id}/price`, { price_per_hour_cents, reason }),
   pricing: () => get("/pricing"),
+  recomputePricing: () => post("/pricing/recompute"),
   bookings: (q: string) => get(`/bookings?${q}`),
   cancelBooking: (id: string, reason: string) => post(`/bookings/${id}/cancel`, { reason }),
   aiStatus: () => get("/ai/status"),
@@ -44,7 +46,13 @@ export const adminApi = {
   audit: (q: string) => get(`/audit?${q}`),
   settings: () => get("/settings"),
   updateSettings: (settings: Record<string, unknown>, reason: string) => patch("/settings", { settings, reason }),
+  updateProfile: (id: string, body: unknown) => patch(`/users/${id}/profile`, body),
+  database: () => get("/database"),
+  databaseRows: (table: string) => get(`/database/${table}`),
+  createDatabaseRow: (table: string, data: Record<string, unknown>, reason?: string) => post(`/database/${table}`, { data, reason }),
+  updateDatabaseRow: (table: string, id: string, data: Record<string, unknown>, reason: string) => patch(`/database/${table}/${id}`, { data, reason }),
   csvUrl: () => `${metaBase}/api/v1/admin/reports/bookings.csv`,
+  auditCsvUrl: () => `${metaBase}/api/v1/admin/reports/audit.csv`,
 };
 
 export async function downloadCsv() {
@@ -54,6 +62,17 @@ export async function downloadCsv() {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "bookings.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+export async function downloadAuditCsv() {
+  const res = await fetch(adminApi.auditCsvUrl(), { headers: await metaAuthHeaders() });
+  if (!res.ok) throw new Error(`Error ${res.status}`);
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "audit_logs.csv";
   a.click();
   URL.revokeObjectURL(a.href);
 }

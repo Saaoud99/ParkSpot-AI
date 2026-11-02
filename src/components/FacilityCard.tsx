@@ -7,7 +7,7 @@ import type { Database } from "@/integrations/supabase/types";
 
 export type Facility = Database["public"]["Tables"]["facilities"]["Row"];
 
-export function FacilityCard({ f, compact, distanceM }: { f: Facility; compact?: boolean; distanceM?: number }) {
+export function FacilityCard({ f, compact, distanceM }: { f: Facility; compact?: boolean; distanceM?: number | undefined }) {
   const { t, lang } = useI18n();
   return (
     <Link to="/facility/$id" params={{ id: f.id }} className="block overflow-hidden rounded-3xl border bg-card shadow-soft transition-transform active:scale-[0.99]">

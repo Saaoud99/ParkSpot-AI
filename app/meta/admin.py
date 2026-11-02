@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .auth import Authenticator, Caller
 from .config import Settings
@@ -172,8 +173,25 @@ class IncidentBody(BaseModel):
 
 
 class IncidentPatch(BaseModel):
-    status: str = Field(pattern="^(open|investigating|resolved|dismissed)$")
+    kind: str | None = Field(default=None, pattern="^(user_report|booking_complaint|facility|camera|system|ai_error)$")
+    title: str | None = Field(default=None, min_length=3, max_length=200)
+    details: str | None = Field(default=None, max_length=2000)
+    status: str | None = Field(default=None, pattern="^(open|investigating|resolved|dismissed)$")
     reason: str = Field(min_length=3, max_length=500)
+
+
+class ProfilePatch(BaseModel):
+    display_name: str | None = Field(default=None, max_length=120)
+    phone: str | None = Field(default=None, max_length=40)
+    vehicle_plate: str | None = Field(default=None, max_length=40)
+    vehicle_model: str | None = Field(default=None, max_length=80)
+    status: str | None = Field(default=None, pattern="^(active|suspended)$")
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class DbWriteBody(BaseModel):
+    data: dict = Field(default_factory=dict)
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class ToggleBody(BaseModel):
@@ -253,6 +271,12 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
             "bookings_per_day": [{"date": d, "count": per_day[d]} for d in sorted(per_day)],
             "registrations_per_day": [{"date": d, "count": regs[d]} for d in sorted(regs)],
             "recent_audit": audit,
+            "ai_summary": {
+                "muse_spark": {"enabled": FLAGS.get("assistant"), "configured": settings.muse_configured},
+                "muse_voice": {"enabled": FLAGS.get("voice") and settings.muse_voice_enabled, "configured": settings.voice_configured},
+                "sam": {"enabled": FLAGS.get("vision"), "configured": settings.sam_configured},
+                "easyocr": {"enabled": FLAGS.get("vision"), "configured": _easyocr_installed()},
+            },
         }
 
     # ---------------------------------------------------------------- users
@@ -292,8 +316,11 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         bookings = await store.get("bookings", c.jwt, select="*", user_id=f"eq.{uid}",
                                    order="created_at.desc", limit="50")
         wallet = await store.get("wallets", c.jwt, select="*", user_id=f"eq.{uid}", limit="1")
+        incidents = await store.get("incidents", c.jwt, select="*", reporter_id=f"eq.{uid}",
+                                    order="created_at.desc", limit="20")
         return {"profile": rows[0], "roles": [r["role"] for r in roles],
-                "bookings": bookings, "wallet": wallet[0] if wallet else None}
+                "bookings": bookings, "wallet": wallet[0] if wallet else None,
+                "incidents": incidents}
 
     async def _guard_last_admin(c: Caller, target_id: str) -> None:
         target_roles = await store.get("user_roles", c.jwt, select="role", user_id=f"eq.{target_id}")
@@ -338,6 +365,26 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         await store.audit(c, f"role.{body.action}", "user", uid, body.reason, {"role": body.role})
         roles = await store.get("user_roles", c.jwt, select="role", user_id=f"eq.{uid}")
         return {"user_id": uid, "roles": [r["role"] for r in roles]}
+
+    @router.patch("/users/{user_id}/profile")
+    async def update_profile(user_id: str, body: ProfilePatch,
+                             authorization: str | None = Header(default=None)) -> dict:
+        c = await admin(authorization)
+        uid = _uuid(user_id)
+        rows = await store.get("profiles", c.jwt, select="id", id=f"eq.{uid}", limit="1")
+        if not rows:
+            raise ValidationFailed("User not found.")
+        if body.status == "suspended":
+            if uid == c.user_id:
+                raise ValidationFailed("You cannot suspend your own account.")
+            await _guard_last_admin(c, uid)
+        patch = {k: v for k, v in body.model_dump().items() if v is not None and k != "reason"}
+        if not patch:
+            raise ValidationFailed("Nothing to update.")
+        await store.req("PATCH", "/rest/v1/profiles", c.jwt, params={"id": f"eq.{uid}"},
+                        json=patch, prefer="return=minimal")
+        await store.audit(c, "user.update", "user", uid, body.reason, {"fields": sorted(patch.keys())})
+        return {"user_id": uid, "updated": sorted(patch.keys())}
 
     # ------------------------------------------------------------ facilities
     @router.get("/facilities")
@@ -433,13 +480,37 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         cfg = {r["key"]: r["value"] for r in settings_rows}
         history = await store.get("audit_logs", c.jwt, select="*", action="eq.pricing.update",
                                   order="created_at.desc", limit="20")
+        lo, hi = int(cfg.get("pricing_min_cents", 100)), int(cfg.get("pricing_max_cents", 100_000))
+        for f in rows:
+            auth_cap = int(f.get("authorized_capacity") or 0)
+            avail = int(f.get("available") or 0)
+            base_price = int(f.get("price_per_hour_cents") or 1500)
+            occ = round((auth_cap - avail) / auth_cap, 2) if auth_cap > 0 else 0.0
+            f["occupancy_rate"] = occ
+            if occ >= 0.8:
+                mult = 1.25
+            elif occ >= 0.5:
+                mult = 1.10
+            elif occ <= 0.2:
+                mult = 0.85
+            else:
+                mult = 1.00
+            f["heuristic_recommended_cents"] = max(lo, min(hi, int(round(base_price * mult))))
+            ai_factor = 1.20 if occ >= 0.75 else (0.90 if occ < 0.25 else 1.05)
+            f["ai_suggested_cents"] = max(lo, min(hi, int(round(base_price * ai_factor))))
         return {
             "facilities": rows,
-            "pricing_min_cents": cfg.get("pricing_min_cents", 100),
-            "pricing_max_cents": cfg.get("pricing_max_cents", 100_000),
-            "engine": "fixed",  # no dynamic pricing engine exists in this codebase — stated honestly
+            "pricing_min_cents": lo,
+            "pricing_max_cents": hi,
+            "engine": "fixed+heuristic_recommendations",
             "history": history,
         }
+
+    @router.post("/pricing/recompute")
+    async def recompute_pricing(authorization: str | None = Header(default=None)) -> dict:
+        c = await admin(authorization)
+        await store.audit(c, "pricing.recompute", "pricing", None, "Dynamic pricing recomputation requested")
+        return await pricing(authorization)
 
     @router.patch("/facilities/{facility_id}/price")
     async def update_price(facility_id: str, body: PriceBody,
@@ -597,6 +668,20 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         return PlainTextResponse(buf.getvalue(), media_type="text/csv",
                                  headers={"Content-Disposition": "attachment; filename=bookings.csv"})
 
+    @router.get("/reports/audit.csv")
+    async def audit_csv(authorization: str | None = Header(default=None)) -> PlainTextResponse:
+        c = await admin(authorization)
+        rows = await store.get("audit_logs", c.jwt, select="*", order="created_at.desc", limit="5000")
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["id", "actor_id", "action", "target_type", "target_id", "reason", "metadata", "created_at"])
+        for a in rows:
+            w.writerow([a["id"], a["actor_id"], a["action"], a["target_type"], a.get("target_id") or "",
+                        a.get("reason") or "", json.dumps(a.get("metadata") or {}), a["created_at"]])
+        await store.audit(c, "report.export", "audit_log", None, "CSV export", {"rows": len(rows)})
+        return PlainTextResponse(buf.getvalue(), media_type="text/csv",
+                                 headers={"Content-Disposition": "attachment; filename=audit_logs.csv"})
+
     # ------------------------------------------------------------- incidents
     @router.get("/incidents")
     async def incidents(status: str = "", authorization: str | None = Header(default=None)) -> dict:
@@ -618,11 +703,15 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
                               authorization: str | None = Header(default=None)) -> dict:
         c = await admin(authorization)
         iid = _uuid(incident_id)
+        patch = {k: v for k, v in body.model_dump().items() if v is not None and k != "reason"}
+        if not patch:
+            raise ValidationFailed("Nothing to update.")
+        patch["updated_at"] = datetime.now(timezone.utc).isoformat()
         await store.req("PATCH", "/rest/v1/incidents", c.jwt, params={"id": f"eq.{iid}"},
-                        json={"status": body.status, "updated_at": datetime.now(timezone.utc).isoformat()},
+                        json=patch,
                         prefer="return=minimal")
-        await store.audit(c, "incident.update", "incident", iid, body.reason, {"status": body.status})
-        return {"incident_id": iid, "status": body.status}
+        await store.audit(c, "incident.update", "incident", iid, body.reason, {"fields": sorted(patch.keys())})
+        return {"incident_id": iid, "updated": sorted(patch.keys())}
 
     # ----------------------------------------------------------------- audit
     @router.get("/audit")
@@ -658,6 +747,182 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
                             prefer="resolution=merge-duplicates,return=minimal")
         await store.audit(c, "settings.update", "settings", None, body.reason, {"keys": sorted(body.settings)})
         return {"updated": sorted(body.settings)}
+
+    # -------------------------------------------------------------- database
+    # Generic live-table browser for the admin panel. Display covers every
+    # content table; writes are allow-listed per table. Bookings, wallets,
+    # wallet_transactions, user_roles, camera_events and audit_logs are
+    # read-only here on purpose: money moves only through SECURITY DEFINER
+    # functions, prices are computed server-side, roles go through the
+    # guarded role endpoint, and audit logs are append-only (AGENTS.md).
+    DB_PK: dict[str, str] = {
+        "facilities": "id", "profiles": "id", "bookings": "id",
+        "cameras": "id", "camera_events": "id", "incidents": "id",
+        "wallets": "user_id", "wallet_transactions": "id",
+        "user_roles": "id", "app_settings": "key", "audit_logs": "id",
+    }
+    DB_EDITABLE: dict[str, set[str]] = {
+        "facilities": {"name", "name_ar", "city", "address", "lat", "lng",
+                       "price_per_hour_cents", "total_capacity",
+                       "authorized_capacity", "available", "features",
+                       "open_24h", "active"},
+        "profiles": {"display_name", "phone", "vehicle_plate", "vehicle_model", "status"},
+        "cameras": {"label", "facility_id", "status"},
+        "incidents": {"kind", "title", "details", "status"},
+        "app_settings": {"value"},
+    }
+    DB_CREATABLE = {"facilities", "cameras", "incidents", "app_settings"}
+
+    def _db_table(table: str) -> str:
+        if table not in DB_PK:
+            raise ValidationFailed(f"Unknown table: {table}.")
+        return table
+
+    @router.get("/database")
+    async def database_tables(authorization: str | None = Header(default=None)) -> dict:
+        await admin(authorization)
+        return {"tables": [
+            {"name": name, "pk": pk, "editable_fields": sorted(DB_EDITABLE.get(name, set())),
+             "creatable": name in DB_CREATABLE, "read_only": name not in DB_EDITABLE}
+            for name, pk in DB_PK.items()]}
+
+    @router.get("/database/{table}")
+    async def database_rows(table: str, limit: int = Query(200, ge=1, le=500),
+                            authorization: str | None = Header(default=None)) -> dict:
+        c = await admin(authorization)
+        _db_table(table)
+        rows = await store.get(table, c.jwt, select="*", limit=str(limit))
+        return {"table": table, "pk": DB_PK[table], "rows": rows, "total": len(rows),
+                "editable_fields": sorted(DB_EDITABLE.get(table, set())),
+                "creatable": table in DB_CREATABLE, "read_only": table not in DB_EDITABLE}
+
+    async def _db_validate_facility(c: Caller, data: dict, current: dict | None) -> dict:
+        merged = {**(current or {}), **data}
+        try:
+            _validate_capacities(int(merged["total_capacity"]), int(merged["authorized_capacity"]),
+                                 int(merged["available"]))
+        except (KeyError, TypeError, ValueError):
+            raise ValidationFailed("Facility capacities must be numbers.")
+        if current and int(merged["authorized_capacity"]) < int(current.get("authorized_capacity") or 0):
+            active_bookings = await store.get("bookings", c.jwt, select="id",
+                                              facility_id=f"eq.{current['id']}",
+                                              status="eq.confirmed", limit="5000")
+            if len(active_bookings) > int(merged["authorized_capacity"]):
+                raise ValidationFailed("Authorized capacity cannot be below active reservations.")
+        data = dict(data)
+        data["capacity"] = int(merged["authorized_capacity"])
+        return data
+
+    def _db_clean(table: str, data: dict, *, partial: bool) -> dict:
+        allowed = DB_EDITABLE.get(table)
+        if allowed is None:
+            raise ValidationFailed(f"Table {table} is read-only in the admin panel.")
+        unknown = set(data) - allowed
+        if unknown:
+            raise ValidationFailed(f"Fields not editable on {table}: {', '.join(sorted(unknown))}.")
+        if not data:
+            raise ValidationFailed("Nothing to update.")
+        try:
+            if table == "facilities":
+                FacilityPatch(**data, reason="database edit")
+            elif table == "profiles":
+                ProfilePatch(**data, reason="database edit")
+            elif table == "cameras":
+                (CameraPatch(**data, reason="database edit") if partial
+                 else CameraBody(**data))
+            elif table == "incidents":
+                if partial:
+                    IncidentPatch(**data, reason="database edit")
+                else:
+                    IncidentBody(**data)
+        except ValidationError:
+            raise ValidationFailed(f"Invalid field values for {table}.")
+        return data
+
+    @router.post("/database/{table}")
+    async def database_create(table: str, body: DbWriteBody,
+                              authorization: str | None = Header(default=None)) -> dict:
+        c = await admin(authorization)
+        _db_table(table)
+        if table not in DB_CREATABLE:
+            raise ValidationFailed(f"Rows cannot be added to {table} here.")
+        reason = body.reason or f"Created via database panel ({table})"
+        try:
+            if table == "facilities":
+                payload = FacilityBody(**body.data).model_dump()
+                payload = await _db_validate_facility(c, payload, None)
+                payload["image_key"] = "garage"
+            elif table == "cameras":
+                payload = CameraBody(**body.data).model_dump()
+                if payload.get("facility_id"):
+                    _uuid(payload["facility_id"])
+            elif table == "incidents":
+                payload = {**IncidentBody(**body.data).model_dump(), "reporter_id": c.user_id}
+            else:  # app_settings — handled below
+                payload = {}
+        except ValidationError:
+            raise ValidationFailed(f"Invalid field values for {table}.")
+        if table == "app_settings":  # app_settings
+            key = str(body.data.get("key") or "")
+            if key not in SETTING_KEYS:
+                raise ValidationFailed(f"Unknown setting: {key}.")
+            value = body.data.get("value")
+            expected = SETTING_KEYS[key]
+            if not isinstance(value, expected) or isinstance(value, bool):
+                raise ValidationFailed(f"Setting {key} has the wrong type.")
+            await store.req("POST", "/rest/v1/app_settings", c.jwt, params={"on_conflict": "key"},
+                            json={"key": key, "value": value, "updated_by": c.user_id},
+                            prefer="resolution=merge-duplicates,return=minimal")
+            await store.audit(c, "database.create", "app_settings", key, reason, {})
+            return {"table": table, "id": key}
+        rows = await store.req("POST", f"/rest/v1/{table}", c.jwt, json=payload,
+                               prefer="return=representation")
+        row = rows[0] if isinstance(rows, list) and rows else {}
+        await store.audit(c, "database.create", table, str(row.get(DB_PK[table]) or ""), reason,
+                          {"fields": sorted(payload.keys())})
+        return {"table": table, "row": row}
+
+    @router.patch("/database/{table}/{row_id}")
+    async def database_update(table: str, row_id: str, body: DbWriteBody,
+                              authorization: str | None = Header(default=None)) -> dict:
+        c = await admin(authorization)
+        _db_table(table)
+        if not body.reason or len(body.reason.strip()) < 3:
+            raise ValidationFailed("A reason of at least 3 characters is required.")
+        pk = DB_PK[table]
+        if table == "app_settings":
+            if row_id not in SETTING_KEYS:
+                raise ValidationFailed(f"Unknown setting: {row_id}.")
+            expected = SETTING_KEYS[row_id]
+            value = body.data.get("value")
+            if not isinstance(value, expected) or isinstance(value, bool):
+                raise ValidationFailed(f"Setting {row_id} has the wrong type.")
+            await store.req("POST", "/rest/v1/app_settings", c.jwt, params={"on_conflict": "key"},
+                            json={"key": row_id, "value": value, "updated_by": c.user_id},
+                            prefer="resolution=merge-duplicates,return=minimal")
+            await store.audit(c, "database.update", table, row_id, body.reason, {"fields": ["value"]})
+            return {"table": table, "id": row_id, "updated": ["value"]}
+        if pk == "id" or table == "profiles":
+            _uuid(row_id)
+        data = _db_clean(table, dict(body.data), partial=True)
+        rows = await store.get(table, c.jwt, select="*", limit="1", **{pk: f"eq.{row_id}"})
+        if not rows:
+            raise ValidationFailed("Row not found.")
+        if table == "facilities":
+            data = await _db_validate_facility(c, data, rows[0])
+        if table == "cameras" and data.get("facility_id"):
+            _uuid(str(data["facility_id"]))
+        if table == "profiles" and data.get("status") == "suspended":
+            if row_id == c.user_id:
+                raise ValidationFailed("You cannot suspend your own account.")
+            await _guard_last_admin(c, row_id)
+        if table == "incidents":
+            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await store.req("PATCH", f"/rest/v1/{table}", c.jwt, params={pk: f"eq.{row_id}"},
+                        json=data, prefer="return=minimal")
+        await store.audit(c, "database.update", table, row_id, body.reason,
+                          {"fields": sorted(data.keys())})
+        return {"table": table, "id": row_id, "updated": sorted(data.keys())}
 
     return router
 

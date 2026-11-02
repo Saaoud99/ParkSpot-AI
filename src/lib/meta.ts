@@ -8,7 +8,7 @@ import { supabase } from "@/integrations/supabase/client";
  * backend `.env`. When the URL is unset, every call throws and the UI
  * degrades gracefully (manual search and the existing chat keep working).
  */
-const RAW_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_META_API_URL ?? "").replace(/\/$/, "");
+const RAW_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.["VITE_META_API_URL"] ?? "").replace(/\/$/, "");
 
 /**
  * If the configured backend points at localhost but the page itself was
@@ -53,7 +53,7 @@ const VOICE_FILENAMES: Record<string, string> = {
 
 /** Filename matching the actual MediaRecorder Blob type (never a hardcoded container). */
 export function voiceUploadFilename(blob: Blob): string {
-  const type = (blob.type || "").split(";")[0].trim().toLowerCase();
+  const type = ((blob.type || "").split(";")[0] ?? "").trim().toLowerCase();
   return VOICE_FILENAMES[type] ?? "voice.webm";
 }
 
