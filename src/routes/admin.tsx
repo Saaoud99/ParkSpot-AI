@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -137,12 +137,13 @@ function ConfirmModal({ state, close }: { state: ConfirmState; close: () => void
   );
 }
 
-function useSection<T>(key: string, fn: () => Promise<T>, enabled = true) {
+function useSection<T>(key: string, fn: () => Promise<T>, enabled = true, refetchInterval = 0) {
   return useQuery({
     queryKey: ["admin", key],
     queryFn: fn,
     enabled: enabled && metaBackendConfigured(),
     retry: false,
+    refetchInterval: refetchInterval > 0 ? refetchInterval : false,
   });
 }
 
@@ -705,89 +706,235 @@ function PricingSection({ confirm }: { confirm: (s: ConfirmState) => void }) {
   );
 }
 
+type AiHealthResult = {
+  status: "ok" | "disabled" | "unconfigured" | "unreachable" | "degraded";
+  reachable: boolean | null;
+  tested_ok: boolean;
+  detail: string;
+  latency_ms: number | null;
+  checked_at: string;
+};
+
+const AI_MODULES: { id: string; label: string }[] = [
+  { id: "muse_spark", label: "Muse Spark" },
+  { id: "muse_voice", label: "Muse Voice Transcribe" },
+  { id: "sam", label: "SAM 3.1" },
+  { id: "easyocr", label: "EasyOCR" },
+];
+
+const HEALTH_BADGE: Record<AiHealthResult["status"], string> = {
+  ok: "bg-emerald-100 text-emerald-800",
+  disabled: "bg-muted text-muted-foreground",
+  unconfigured: "bg-amber-100 text-amber-800",
+  unreachable: "bg-red-100 text-red-800",
+  degraded: "bg-orange-100 text-orange-800",
+};
+
+function fmtUptime(total?: number): string {
+  if (!Number.isFinite(total) || total === undefined) return "—";
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${total % 60}s`;
+}
+
 function AiSection({ confirm }: { confirm: (s: ConfirmState) => void }) {
   const { t } = useI18n();
   const qc = useQueryClient();
-  const { data } = useSection("ai", adminApi.aiStatus);
-  const health = useMutation({ mutationFn: (s: string) => adminApi.aiHealth(s) });
+  // Poll so a restart (new instance_id) or an outage (fetch error) shows up
+  // without a manual refresh. On error react-query keeps the last data.
+  const { data, isError, isFetching, refetch } = useSection("ai", adminApi.aiStatus, true, 15000);
+  const [results, setResults] = useState<Record<string, AiHealthResult>>({});
+  const [restarted, setRestarted] = useState(false);
+  const lastInstance = useRef<string | null>(null);
+  const instanceId: string | undefined = data?.backend?.instance_id;
+
+  useEffect(() => {
+    if (!instanceId) return;
+    if (lastInstance.current && lastInstance.current !== instanceId) {
+      // Counters and health results belong to the old process.
+      setRestarted(true);
+      setResults({});
+    }
+    lastInstance.current = instanceId;
+  }, [instanceId]);
+
+  const health = useMutation({
+    mutationFn: (s: string) => adminApi.aiHealth(s),
+    onSuccess: (res: AiHealthResult & { service: string }) =>
+      setResults((prev) => ({ ...prev, [res.service]: res })),
+    onError: (e) => toast.error((e as Error).message),
+  });
+  const healthAll = useMutation({
+    mutationFn: () => adminApi.aiHealthAll(),
+    onSuccess: (res: { services: Record<string, AiHealthResult> }) =>
+      setResults(res.services ?? {}),
+    onError: (e) => toast.error((e as Error).message),
+  });
+
   const services = data?.services ?? {};
   const metrics = data?.metrics?.services ?? {};
-  const rows: { id: string; label: string; feature: string }[] = [
-    { id: "muse_spark", label: "Muse Spark", feature: "assistant" },
-    { id: "muse_voice", label: "Muse Voice Transcribe", feature: "voice" },
-    { id: "sam", label: "SAM 3.1", feature: "vision" },
-    { id: "easyocr", label: "EasyOCR", feature: "vision" },
-  ];
+  const flagState = data?.flag_state;
+  // No URL configured, fetch error, or a configured backend that never
+  // answered: all three mean "do not claim the backend is online".
+  const configured = metaBackendConfigured();
+  const unreachable = !configured || isError || (!data && !isFetching);
+  const busy = health.isPending || healthAll.isPending;
+  const statusLabel = (st: AiHealthResult["status"]) =>
+    ({
+      ok: t("statusOk"),
+      disabled: t("statusDisabled"),
+      unconfigured: t("statusUnconfigured"),
+      unreachable: t("statusUnreachable"),
+      degraded: t("statusDegraded"),
+    })[st] ?? st;
+  const persistenceLine = !flagState
+    ? null
+    : !flagState.persistent
+      ? t("switchesMemoryOnly")
+      : flagState.persisted === false
+        ? t("switchesNotPersisted")
+        : t("switchesPersisted");
+
   return (
-    <div className="grid gap-3 lg:grid-cols-2">
-      {rows.map((row) => {
-        const s = services[row.id] ?? {};
-        const m = metrics[row.id] ?? {};
-        const res = health.data && health.variables === row.id ? health.data : null;
-        return (
-          <Card key={row.id}>
-            <div className="flex items-center justify-between">
-              <p className="font-semibold">{row.label}</p>
-              <button
-                className={ghostCls}
-                disabled={health.isPending}
-                onClick={() => health.mutate(row.id)}
-              >
-                {t("healthCheck")}
-              </button>
-            </div>
-            <dl className="mt-2 space-y-1 text-sm">
-              <div className="flex justify-between">
-                <dt className="text-muted-foreground">{t("configuredLbl")}</dt>
-                <dd>
-                  {s.configured ? "✓" : "—"}
-                  {s.model ? ` · ${s.model}` : ""}
-                </dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-muted-foreground">{t("enabledLbl")}</dt>
-                <dd>{s.enabled ? t("enabledLbl") : t("disabledLbl")}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-muted-foreground">Requests ({t("sinceRestart")})</dt>
-                <dd>
-                  {m.requests ?? 0} · err {m.errors ?? 0}
-                  {m.avg_latency_ms ? ` · ${m.avg_latency_ms} ms` : ""}
-                </dd>
-              </div>
-              {m.last_error && (
-                <div className="flex justify-between gap-2">
-                  <dt className="text-muted-foreground">Last error</dt>
-                  <dd className="truncate text-destructive">{m.last_error}</dd>
+    <div className="space-y-3">
+      {unreachable && configured && (
+        <Card className="border-destructive/40 bg-destructive/5 text-sm">
+          {data ? t("backendUnreachable") : t("backendOff")}
+        </Card>
+      )}
+      {restarted && !unreachable && (
+        <Card className="flex items-center justify-between gap-3 border-amber-300 bg-amber-50 text-sm">
+          <span>{t("backendRestarted")}</span>
+          <button className={ghostCls} onClick={() => setRestarted(false)}>
+            ✓
+          </button>
+        </Card>
+      )}
+      <Card className="flex flex-wrap items-center justify-between gap-3 text-sm">
+        <div className="space-y-1">
+          <p className="font-semibold">
+            <span
+              className={`me-2 inline-block h-2.5 w-2.5 rounded-full ${
+                unreachable ? "bg-red-500" : "bg-emerald-500"
+              }`}
+            />
+            {unreachable ? t("statusUnreachable") : t("backendUp")}
+            {data?.backend?.instance_id ? (
+              <span className="ms-2 font-mono text-xs text-muted-foreground">
+                #{data.backend.instance_id}
+              </span>
+            ) : null}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t("uptimeLbl")}: {fmtUptime(data?.backend?.uptime_s)}
+            {data?.backend?.version ? ` · v${data.backend.version}` : ""}
+            {persistenceLine ? ` · ${persistenceLine}` : ""}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button className={ghostCls} disabled={isFetching} onClick={() => void refetch()}>
+            <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+          </button>
+          <button
+            className={ghostCls}
+            disabled={busy || unreachable}
+            onClick={() => healthAll.mutate()}
+          >
+            {healthAll.isPending ? t("checking") : t("checkAll")}
+          </button>
+        </div>
+      </Card>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {AI_MODULES.map((row) => {
+          const s = services[row.id] ?? {};
+          const m = metrics[row.id] ?? {};
+          const res = results[row.id];
+          const checkingThis = health.isPending && health.variables === row.id;
+          return (
+            <Card key={row.id}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold">{row.label}</p>
+                  {res && (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs ${HEALTH_BADGE[res.status]}`}
+                    >
+                      {statusLabel(res.status)}
+                    </span>
+                  )}
                 </div>
-              )}
-              {res && (
-                <div className="flex justify-between gap-2">
-                  <dt className="text-muted-foreground">{t("healthCheck")}</dt>
+                <button
+                  className={ghostCls}
+                  disabled={busy || unreachable}
+                  onClick={() => health.mutate(row.id)}
+                >
+                  {checkingThis ? t("checking") : t("healthCheck")}
+                </button>
+              </div>
+              <dl className="mt-2 space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">{t("configuredLbl")}</dt>
                   <dd>
-                    {res.reachable ? t("reachableLbl") : "—"} ·{" "}
-                    {res.tested_ok ? t("testedOk") : res.detail}
+                    {s.configured ? "✓" : "—"}
+                    {s.model ? ` · ${s.model}` : ""}
                   </dd>
                 </div>
-              )}
-            </dl>
-            <button
-              className={`${ghostCls} mt-3`}
-              onClick={() =>
-                confirm({
-                  title: `${row.label}: ${s.enabled ? t("disabledLbl") : t("enabledLbl")}`,
-                  run: async (r) => {
-                    await adminApi.aiToggle(row.feature, !s.enabled, r);
-                    qc.invalidateQueries({ queryKey: ["admin"] });
-                  },
-                })
-              }
-            >
-              {s.enabled ? t("disabledLbl") : t("enabledLbl")}
-            </button>
-          </Card>
-        );
-      })}
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">{t("enabledLbl")}</dt>
+                  <dd>
+                    {s.enabled ? t("enabledLbl") : t("disabledLbl")}
+                    {" · "}
+                    <span className={s.active ? "text-emerald-700" : "text-muted-foreground"}>
+                      {s.active ? t("moduleActive") : t("moduleInactive")}
+                    </span>
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">Requests ({t("sinceRestart")})</dt>
+                  <dd>
+                    {m.requests ?? 0} · err {m.errors ?? 0}
+                    {m.avg_latency_ms ? ` · ${m.avg_latency_ms} ms` : ""}
+                  </dd>
+                </div>
+                {m.last_error && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Last error</dt>
+                    <dd className="truncate text-destructive">{m.last_error}</dd>
+                  </div>
+                )}
+                {res && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="shrink-0 text-muted-foreground">{t("lastCheckLbl")}</dt>
+                    <dd className="text-end">
+                      {res.reachable === true ? `${t("reachableLbl")} · ` : ""}
+                      {res.tested_ok ? t("testedOk") : res.detail}
+                      {res.latency_ms != null ? ` · ${Math.round(res.latency_ms)} ms` : ""}
+                    </dd>
+                  </div>
+                )}
+              </dl>
+              <button
+                className={`${ghostCls} mt-3`}
+                disabled={unreachable}
+                onClick={() =>
+                  confirm({
+                    title: `${row.label}: ${s.enabled ? t("disabledLbl") : t("enabledLbl")}`,
+                    run: async (r) => {
+                      await adminApi.aiToggle(row.id, !s.enabled, r);
+                      qc.invalidateQueries({ queryKey: ["admin"] });
+                    },
+                  })
+                }
+              >
+                {s.enabled ? t("disabledLbl") : t("enabledLbl")}
+              </button>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }

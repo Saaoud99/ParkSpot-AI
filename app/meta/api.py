@@ -1,6 +1,7 @@
 """FastAPI surface for the Meta integration.
 
 Routes (all under /api/v1/meta):
+  GET  /healthz           public liveness: instance id + uptime (restart detection)
   GET  /status            public feature flags only — never secrets
   POST /assistant/chat    Muse Spark with controlled tools (auth required)
   POST /vision/analyze    SAM 3.1 + EasyOCR + booking verification (ops only)
@@ -16,12 +17,14 @@ import asyncio
 import logging
 import time
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from . import runtime
 from .access import AccessVerificationService
 from .admin import build_admin_router
 from .auth import Authenticator
@@ -47,7 +50,16 @@ ocr = EasyOCRService(settings)
 voice = MuseVoiceService(settings)
 access_svc = AccessVerificationService(sam, ocr, inventory)
 
-app = FastAPI(title="ParkSpot AI — Meta integration", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    state = FLAGS.state_info()
+    log.info("backend up instance=%s modules=%s switches_loaded_from=%s persistent=%s",
+             runtime.INSTANCE_ID, FLAGS.snapshot(), state["loaded_from"], state["persistent"])
+    yield
+    log.info("backend shutting down instance=%s", runtime.INSTANCE_ID)
+
+
+app = FastAPI(title="ParkSpot AI — Meta integration", version=runtime.VERSION, lifespan=_lifespan)
 
 # The web app (different port/host, incl. LAN IPs like 10.1.19.4) calls this
 # API cross-origin; without CORS the browser blocks every response.
@@ -101,17 +113,28 @@ class ChatRequest(BaseModel):
     coords: ChatCoords | None = None  # device GPS from the client; the model never supplies this
 
 
+@app.get("/healthz")
+async def healthz() -> dict:
+    """Unauthenticated liveness probe.
+
+    Clients compare ``instance_id`` across polls: a new id means the
+    backend restarted (in-memory metrics reset; switches reload from the
+    state file), no answer means it is unreachable. Never includes
+    secrets, hosts, or configuration.
+    """
+    return {"status": "ok", **runtime.info()}
+
+
 @app.get("/api/v1/meta/status")
 async def status() -> dict:
-    return settings.public_status()
+    flags = FLAGS.snapshot()
+    return {**settings.public_status(flags), "modules": flags, "backend": runtime.info()}
 
 
 @app.post("/api/v1/meta/assistant/chat")
 async def assistant_chat(body: ChatRequest, authorization: str | None = Header(default=None)) -> dict:
     caller = await auth.require_user(authorization)
     await _rate_limit(f"chat:{caller.user_id}")
-    if not FLAGS.get("assistant"):
-        raise NotConfigured("The AI assistant is disabled by an administrator.")
     coords = None
     if body.coords:
         validate_coordinates(body.coords.lat, body.coords.lng)
@@ -119,9 +142,11 @@ async def assistant_chat(body: ChatRequest, authorization: str | None = Header(d
     executor = ToolExecutor(inventory, caller.jwt, coords=coords)
     started = time.perf_counter()
     messages = [m.model_dump() for m in body.messages]
-    if not settings.muse_configured:
+    if not settings.muse_configured or not FLAGS.get("muse_spark"):
         # Always-available mode: deterministic answers from real inventory,
-        # honestly labeled — never presented as Muse Spark output.
+        # honestly labeled — never presented as Muse Spark output. Also the
+        # path when an admin switched Muse Spark off: no provider call is
+        # made, and the driver still gets a grounded answer.
         result = await grounded.ask(messages=messages, executor=executor, lang=body.lang)
         METRICS.record("grounded_assistant", True, elapsed_ms(started))
         log.info("assistant chat (grounded) user=%s facilities=%d", caller.user_id, len(result["facilities"]))
@@ -148,14 +173,16 @@ async def vision_analyze(image: UploadFile = File(...), facility_id: str | None 
                          authorization: str | None = Header(default=None)) -> dict:
     caller = await auth.require_ops(authorization)
     await _rate_limit(f"vision:{caller.user_id}")
-    if not FLAGS.get("vision"):
-        raise NotConfigured("Camera vision is disabled by an administrator.")
+    if not FLAGS.get("sam"):
+        raise NotConfigured("SAM 3.1 camera vision is disabled by an administrator.")
+    ocr_enabled = FLAGS.get("easyocr")
     # Bounded read: never load an unbounded upload into memory.
     data = await image.read(settings.max_image_bytes + 1)
     started = time.perf_counter()
     try:
         result = await access_svc.analyze(image=data, content_type=image.content_type or "image/jpeg",
-                                          user_jwt=caller.jwt, facility_id=facility_id)
+                                          user_jwt=caller.jwt, facility_id=facility_id,
+                                          ocr_enabled=ocr_enabled)
     except Exception as e:
         METRICS.record("sam", False, elapsed_ms(started), str(e)[:120])
         raise
@@ -197,8 +224,8 @@ async def voice_transcribe(audio: UploadFile = File(...), language: str = Form(d
                            authorization: str | None = Header(default=None)) -> dict:
     caller = await auth.require_user(authorization)
     await _rate_limit(f"voice:{caller.user_id}")
-    if not FLAGS.get("voice"):
-        raise NotConfigured("Voice input is disabled by an administrator.")
+    if not FLAGS.get("muse_voice"):
+        raise NotConfigured("Muse Voice Transcribe is disabled by an administrator.")
     data = await audio.read(settings.audio_upload_limit_bytes + 1)
     started = time.perf_counter()
     try:

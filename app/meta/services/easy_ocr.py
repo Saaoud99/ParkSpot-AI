@@ -40,8 +40,13 @@ class EasyOCRService:
                 "Install requirements-vision.txt on a machine that can run it (see README).") from e
         with self._lock:
             if self._reader is None:
-                # Arabic + French/Latin plates are the product target; English covers Latin digits/letters.
-                self._reader = easyocr.Reader(["ar", "fr", "en"], gpu=False, verbose=False)
+                # Plates are normalised to A-Z0-9 (see normalize_plate), so the
+                # Latin/English model is the right one. EasyOCR refuses
+                # ["ar", "fr", "en"]: its Arabic model may only be paired with
+                # English. Override with EASYOCR_LANGS="ar,en" if ever needed.
+                import os
+                langs = [l.strip() for l in os.environ.get("EASYOCR_LANGS", "en").split(",") if l.strip()] or ["en"]
+                self._reader = easyocr.Reader(langs, gpu=False, verbose=False)
         return self._reader
 
     async def read_plate(self, image: bytes, region: dict | None = None) -> dict:

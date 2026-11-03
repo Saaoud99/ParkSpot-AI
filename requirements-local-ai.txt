@@ -1,0 +1,16 @@
+# Free, self-hosted AI services for ParkSpot (install into the backend venv):
+#   pip install -r requirements-local-ai.txt
+#
+# SAM 3.1 (open weights, Meta): local segmentation service
+#   scripts/local_sam_server.py. Checkpoints are GATED on Hugging Face —
+#   accept the license at https://huggingface.co/facebook/sam3.1 and run
+#   `hf auth login` once before the first start.
+sam3>=0.1.4
+huggingface-hub>=0.30
+# Local speech-to-text (open-source Whisper) behind the Muse Voice contract:
+#   scripts/local_asr_server.py. Muse Voice Transcribe itself is a hosted
+#   Meta API with no open weights.
+faster-whisper>=1.2
+# torch/torchvision come from requirements-vision.txt (EasyOCR).
+torchvision>=0.20
+psutil>=5.9   # imported by sam3 video predictor at package import

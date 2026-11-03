@@ -213,6 +213,28 @@ const en = {
   statusDistribution: "Reservation status",
   recentActivity: "Recent administrative activity",
   backendOff: "Admin backend unreachable. Start the FastAPI backend and set VITE_META_API_URL.",
+  voiceNoSpeech:
+    "I couldn't hear any words in that recording. Try again, a little closer to the microphone.",
+  voiceFailed: "Voice input failed. Please try again or type your question.",
+  backendUnreachable:
+    "Backend unreachable — showing the last known state. Toggles and health checks are paused until it answers.",
+  backendRestarted:
+    "Backend restarted. Request counters reset; module switches were reloaded from the saved state.",
+  backendUp: "Backend online",
+  uptimeLbl: "Uptime",
+  checkAll: "Check all",
+  checking: "Checking…",
+  lastCheckLbl: "Last check",
+  switchesPersisted: "Switches saved — survive a backend restart",
+  switchesNotPersisted: "Switches could not be saved — they reset on restart",
+  switchesMemoryOnly: "Switches are memory-only — they reset on restart",
+  statusOk: "OK",
+  statusDisabled: "Switched off",
+  statusUnconfigured: "Not configured",
+  statusUnreachable: "Unreachable",
+  statusDegraded: "Degraded",
+  moduleActive: "Active",
+  moduleInactive: "Inactive",
 };
 type Dict = typeof en;
 const ar: Dict = {
@@ -425,6 +447,27 @@ const ar: Dict = {
   statusDistribution: "حالة الحجوزات",
   recentActivity: "أحدث نشاط إداري",
   backendOff: "خادم الإدارة غير متاح. شغّل خادم FastAPI وعيّن VITE_META_API_URL.",
+  voiceNoSpeech: "لم أتمكن من تمييز أي كلمات في التسجيل. حاول مجدداً وأقرب قليلاً من الميكروفون.",
+  voiceFailed: "تعذّر الإدخال الصوتي. حاول مجدداً أو اكتب سؤالك.",
+  backendUnreachable:
+    "الخادم غير متاح — تُعرض آخر حالة معروفة. التبديل وفحوصات الصحة متوقفة حتى يستجيب.",
+  backendRestarted:
+    "أُعيد تشغيل الخادم. تمت إعادة تعيين عدّادات الطلبات؛ وأُعيد تحميل مفاتيح الوحدات من الحالة المحفوظة.",
+  backendUp: "الخادم متصل",
+  uptimeLbl: "مدة التشغيل",
+  checkAll: "فحص الكل",
+  checking: "جارٍ الفحص…",
+  lastCheckLbl: "آخر فحص",
+  switchesPersisted: "المفاتيح محفوظة — تبقى بعد إعادة تشغيل الخادم",
+  switchesNotPersisted: "تعذّر حفظ المفاتيح — ستُعاد لوضعها الافتراضي عند إعادة التشغيل",
+  switchesMemoryOnly: "المفاتيح في الذاكرة فقط — تُعاد لوضعها الافتراضي عند إعادة التشغيل",
+  statusOk: "سليم",
+  statusDisabled: "معطّل يدوياً",
+  statusUnconfigured: "غير مهيأ",
+  statusUnreachable: "غير قابل للوصول",
+  statusDegraded: "متدهور",
+  moduleActive: "نشط",
+  moduleInactive: "غير نشط",
 };
 
 type Lang = "en" | "ar";

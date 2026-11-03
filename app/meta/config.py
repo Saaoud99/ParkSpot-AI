@@ -115,6 +115,8 @@ class Settings:
     max_image_bytes: int = 5 * 1024 * 1024
     ocr_min_confidence: float = 0.6
     rate_limit_per_minute: int = 30
+    # Per-probe timeout for the admin health checks (AI_HEALTH_TIMEOUT_S, 1–30 s).
+    ai_health_timeout_s: float = 6.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -144,6 +146,7 @@ class Settings:
             provider_total_timeout_s=min(300.0, max(10.0, _float("META_TOTAL_TIMEOUT_S", 90.0))),
             ocr_min_confidence=_float("OCR_MIN_CONFIDENCE", 0.6),
             rate_limit_per_minute=_int("META_RATE_LIMIT_PER_MINUTE", 30),
+            ai_health_timeout_s=min(30.0, max(1.0, _float("AI_HEALTH_TIMEOUT_S", 6.0))),
         )
 
     @property
@@ -169,13 +172,22 @@ class Settings:
     def voice_configured(self) -> bool:
         return bool(self.muse_voice_enabled and self.meta_voice_api_key and self.meta_voice_base_url and self.muse_voice_model)
 
-    def public_status(self) -> dict:
+    def public_status(self, flags: dict | None = None) -> dict:
         """Feature flags safe to expose to the frontend (never secrets —
-        key presence is reported as a boolean only, to aid setup)."""
+        key presence is reported as a boolean only, to aid setup).
+
+        ``flags`` is the runtime module-switch snapshot; a module the admin
+        switched off reports exactly like an unconfigured one, so clients
+        degrade the same way in both cases.
+        """
+        on = flags or {}
+        spark_on = on.get("muse_spark", True)
+        voice_on = on.get("muse_voice", True)
+        sam_on = on.get("sam", True)
         return {
-            "assistant": "meta" if self.muse_configured else "grounded_fallback",
-            "vision_sam": "configured" if self.sam_configured else "unconfigured",
-            "voice": "enabled" if self.voice_configured else "disabled",
+            "assistant": "meta" if self.muse_configured and spark_on else "grounded_fallback",
+            "vision_sam": ("configured" if self.sam_configured else "unconfigured") if sam_on else "disabled",
+            "voice": "enabled" if self.voice_configured and voice_on else "disabled",
             "voice_flag_on": self.muse_voice_enabled,
             "voice_key_present": bool(self.meta_voice_api_key),
             "voice_max_seconds": self.muse_voice_max_seconds,

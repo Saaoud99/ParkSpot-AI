@@ -363,6 +363,9 @@ returns feature *flags*, never keys.
 | `META_TOTAL_TIMEOUT_S` | `90` | Total deadline for one assistant request, tool rounds included (clamped to 10–300 s). |
 | `OCR_MIN_CONFIDENCE` | `0.6` | Plate reads below this confidence are rejected. |
 | `META_CORS_ORIGINS` | `*` | Comma-separated CORS allow-list. Tighten in production. |
+| `AI_FLAGS_STATE_PATH` | `.ai_flags.json` (next to `.env`) | Where the admin's AI module switches (Muse Spark / Muse Voice / SAM 3.1 / EasyOCR on-off) are persisted so they survive a backend restart. Set to an empty string for memory-only switches that reset on restart. Git-ignored; contains no secrets. |
+| `AI_MODULES_DEFAULT_OFF` | — | Comma-separated modules (`muse_spark`, `muse_voice`, `sam`, `easyocr`) that start **switched off** when no state file exists yet. A saved admin choice always wins over this default. |
+| `AI_HEALTH_TIMEOUT_S` | `6` | Per-module timeout for the admin health probes (clamped 1–30 s). |
 
 ## How to use the app
 
@@ -425,12 +428,16 @@ request body or the model.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/v1/meta/status` | public | Feature flags only (`assistant`: `"meta"` or `"grounded_fallback"`, `voice`, …) — never secrets or model keys. |
+| `GET /healthz` | public | Liveness: `instance_id`, `started_at`, `uptime_s`, `version`. A new `instance_id` means the backend restarted; no answer means it is unreachable. |
+| `GET /api/v1/meta/status` | public | Feature flags only (`assistant`: `"meta"` or `"grounded_fallback"`, `voice`, `vision_sam`, per-module `modules` switches, `backend` identity) — never secrets or model keys. A module an admin switched off reports exactly like an unconfigured one. |
 | `POST /api/v1/meta/assistant/chat` | user | Muse Spark with controlled tools: `search_facilities`, `get_facility_details`, `check_availability`, `calculate_booking_quote`, `search_nearby_facilities` (device-shared coordinates only — the model can never supply GPS). When Muse is unconfigured or unavailable it answers in grounded fallback mode over the same tools and says so (`mode` field + UI badge). |
 | `POST /api/v1/meta/vision/analyze` | partner/admin | SAM 3.1 detection → EasyOCR plate → booking verification. |
 | `POST /api/v1/voice/transcribe` · `POST /api/v1/meta/voice/transcribe` | user | Voice → text (off unless `MUSE_VOICE_ENABLED=true`). |
 | `GET /api/v1/meta/spots/nearby` | user | GPS nearby search over real coordinates (Haversine). |
 | `/api/v1/admin/*` | admin | Control Center API; admin role re-verified server-side on **every** request. |
+| `GET /api/v1/admin/ai/status` | admin | One row per AI module (`muse_spark`, `muse_voice`, `sam`, `easyocr`): `configured` (env), `enabled` (switch), `active` (both), `state`, model id, who/when it was last toggled, since-restart metrics, backend identity and how the switches are stored (`flag_state`). |
+| `GET /api/v1/admin/ai/health` · `POST /api/v1/admin/ai/health/{module}` | admin | Safe health probes (reachability only — no inference, no audio/image, no credentials in the response). Each result: `status` ∈ `ok` / `disabled` / `unconfigured` / `unreachable` / `degraded`, `reachable`, `tested_ok`, `detail`, `latency_ms`. The collection form probes all four in parallel. |
+| `POST /api/v1/admin/ai/toggle` | admin | `{feature, enabled, reason}` — `feature` is a module id (or legacy group `assistant` / `voice` / `vision` = SAM + EasyOCR). Audited, persisted to `AI_FLAGS_STATE_PATH`, response says whether it was `persisted`. |
 
 Prices in every tool/response are computed server-side in **integer
 cents** from `facilities.price_per_hour_cents`.
@@ -531,6 +538,40 @@ working either way.
 | **EasyOCR plates** | Separate OCR step (optional, `requirements-vision.txt`). Reads below `OCR_MIN_CONFIDENCE` are rejected; access requires a matching real booking in the database. |
 | **Muse Voice Transcribe** | `POST /api/v1/voice/transcribe`: multipart `request` JSON (`PUSH_TO_TALK`, language bias Arabic/French/English) + mono 16 kHz WAV (browser WebM/M4A converted with FFmpeg on the backend). Capped at 30 s / 10 MB, never stored or logged. **Off by default.** Darija recognition is not promised — transcripts are shown for editing first. Confirm endpoint/model values in your Meta developer account before going live. |
 | **GPS nearby parking** | Explicit-tap foreground geolocation only (never on launch, never tracked/stored), Haversine ranking over real coordinates, 5 km default → 50 km max, distances on cards. |
+| **Module switches & health** | Each module runs only if (env configured) **and** (admin switch on). Switching Muse Spark off routes chat to the labeled grounded assistant (no provider call); switching SAM off returns `503 not_configured` for camera analysis; switching EasyOCR off still runs detection but reports `reason: "ocr_disabled"` and never grants access; switching Muse Voice off returns `503`. Switches persist in `AI_FLAGS_STATE_PATH` and reload on restart; request counters are in-memory and reset (the dashboard says so, keyed on `/healthz` `instance_id`). When the backend is unreachable the dashboard keeps the last known state, disables toggles, and says it is unreachable instead of erroring. |
+
+## Running every AI service locally (free)
+
+Step-by-step Ubuntu instructions (packages, Ollama, GPU option, systemd
+units, troubleshooting): **[LOCAL_AI.md](LOCAL_AI.md)**. Summary below.
+
+Only two of the four modules have open weights. The other two are
+Meta-hosted APIs, so "self-hosting" them means running an open
+substitute behind the same contract — the dashboard shows the real
+model id, never a Muse label.
+
+| Module | Local option | Honest note |
+|---|---|---|
+| **Muse Spark** | [Ollama](https://ollama.com) serving `llama3.2` (Meta Llama 3.2 3B, tool calling) through its OpenAI-compatible `/v1` API | Muse Spark itself is API-only. `META_BASE_URL=http://localhost:11434/v1`, `MODEL_API_KEY=ollama`, `MUSE_SPARK_MODEL=llama3.2`. Every fact still comes from the backend tools. |
+| **Muse Voice Transcribe** | `scripts/local_asr_server.py` — open-source Whisper via `faster-whisper`, same `/asr/transcribe` contract | Muse Voice is API-only. `META_VOICE_BASE_URL=http://localhost:8002`, `META_VOICE_API_KEY=local`, `MUSE_VOICE_MODEL=whisper-small`, `MUSE_VOICE_ENABLED=true`. Needs FFmpeg. |
+| **SAM 3.1** | `scripts/local_sam_server.py` — the official `sam3` package + `facebook/sam3.1` weights | Genuinely SAM 3.1. Weights are **gated**: accept the license on Hugging Face and `hf auth login` once. CPU inference is slow (tens of seconds a frame on a laptop). `SAM_SERVICE_URL=http://localhost:8001`, `SAM_MODEL=sam3.1`. |
+| **EasyOCR** | `pip install -r requirements-vision.txt` in the backend venv | Genuinely EasyOCR; models download on first read. |
+
+```sh
+brew install ffmpeg ollama                      # macOS; apt-get on Linux
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements-meta.txt -r requirements-vision.txt -r requirements-local-ai.txt
+.venv/bin/hf auth login                         # after accepting https://huggingface.co/facebook/sam3.1
+scripts/run_local_ai.sh                         # Ollama + SAM + Whisper + backend + frontend
+```
+
+On machines without CUDA (macOS, CPU-only Linux) the SAM server loads a
+tiny import-time stub for Triton (`scripts/triton_stub/`) and remaps the
+package's hard-coded `device="cuda"` tensor factories to CPU; nothing
+else in `sam3` is patched. The launcher writes logs to `.local-ai-logs/`. In the dashboard's AI
+Management page, **Check all** shows SAM as *degraded* until its model
+has finished loading (its `/health` answers 503 while loading or when
+the gated download was refused, with the fix in `detail`).
 
 ## Super Admin Control Center
 
@@ -553,8 +594,11 @@ Sections: Overview (real counts, bookings-per-day chart, status mix) ·
 Users & Accounts (search, suspend/reactivate, grant/revoke roles) ·
 Parking Facilities (create/edit, activation toggle) · Bookings (filter,
 cancel with the standard refund policy) · Pricing (price edits within
-configured bounds, change history) · AI Management (configured/model
-visibility, safe reachability health checks, runtime feature toggles) ·
+configured bounds, change history) · AI Management (one card per module — Muse Spark, Muse Voice Transcribe,
+SAM 3.1, EasyOCR — with configured/model visibility, per-module on/off
+switches that survive a backend restart, safe reachability health
+checks, and a backend liveness line that tells a *restart* from an
+*outage*) ·
 Cameras & Access (camera registry + recent verification events) ·
 Payments & Wallet (DEMO — adjustments only through
 `admin_adjust_wallet`, never direct balance writes) · Reports

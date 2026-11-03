@@ -79,6 +79,45 @@ def _public(f: dict) -> dict:
     }
 
 
+_CITY_BY_LOWER = {c.lower(): c for c in ALLOWED_CITIES}
+_FEATURE_ALIASES = {"ev charging": "ev", "electric": "ev", "charging": "ev", "camera": "cctv", "cameras": "cctv",
+                    "indoor": "covered", "underground": "covered", "roof": "covered"}
+
+
+def _clean_search_args(raw: dict | None) -> dict:
+    """Normalise sloppy-but-harmless search arguments before validation.
+
+    Small/local models often send ``max_price_mad: 0``, ``limit: 0``, a
+    lower-case city or an unknown extra key. None of that should turn a
+    legitimate search into a tool error; genuinely wrong values (an unknown
+    city, a price out of range) are still rejected by ``SearchArgs``.
+    """
+    raw = dict(raw or {})
+    out: dict = {}
+
+    def _text(v) -> str | None:
+        # Small models often send the *string* "null"/"none" for an unset field.
+        if not isinstance(v, str):
+            return None
+        v = v.strip()
+        return v if v and v.lower() not in {"null", "none", "undefined", "n/a", "any", "all"} else None
+
+    city = _text(raw.get("city"))
+    if city:
+        out["city"] = _CITY_BY_LOWER.get(city.lower(), city)
+    feature = _text(raw.get("feature"))
+    if feature:
+        f = feature.lower()
+        out["feature"] = _FEATURE_ALIASES.get(f, f)
+    price = raw.get("max_price_mad")
+    if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
+        out["max_price_mad"] = price
+    limit = raw.get("limit")
+    if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit >= 1:
+        out["limit"] = int(min(8, limit))
+    return out
+
+
 class ToolExecutor:
     def __init__(self, inventory: Inventory, user_jwt: str, coords: tuple[float, float] | None = None):
         self._inv = inventory
@@ -90,7 +129,7 @@ class ToolExecutor:
     async def execute(self, name: str, raw_args: dict) -> dict:
         try:
             if name == "search_facilities":
-                a = SearchArgs(**(raw_args or {}))
+                a = SearchArgs(**_clean_search_args(raw_args))
                 if a.city and a.city not in ALLOWED_CITIES:
                     raise ValidationFailed(f"Unknown city: {a.city}")
                 if a.feature and a.feature not in ALLOWED_FEATURES:

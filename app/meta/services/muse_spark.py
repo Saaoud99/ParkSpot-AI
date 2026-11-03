@@ -283,6 +283,7 @@ class MuseSparkService:
         convo += [{"role": m["role"], "content": m["content"]} for m in messages[-12:]]
         last_user = next((str(m.get("content") or "") for m in reversed(messages) if m.get("role") == "user"), "")
         tools_used = False
+        any_tool_ok = False  # at least one tool call executed without error
         location_not_shared = False
 
         for _ in range(3):  # bounded tool loop — no runaway model calls
@@ -299,6 +300,12 @@ class MuseSparkService:
             if not isinstance(calls, list):
                 raise InvalidProviderResponse("Model returned a malformed tool call.")
             if not calls:
+                if tools_used and not any_tool_ok and GroundedAssistant.parking_intent(last_user):
+                    # Every tool call the model made was rejected (malformed
+                    # arguments are common with small local models). Do not
+                    # answer "nothing found" about a search that never ran:
+                    # the deterministic assistant searches the real inventory.
+                    return await GroundedAssistant().ask(messages=messages, executor=executor, lang=lang)
                 if not tools_used and GroundedAssistant.parking_intent(last_user):
                     # Factual parking question, but the model skipped its
                     # tools: never ship ungrounded prose about inventory,
@@ -306,8 +313,10 @@ class MuseSparkService:
                     # answers from real inventory instead. (General chat
                     # without parking intent keeps the natural reply below.)
                     return await GroundedAssistant().ask(messages=messages, executor=executor, lang=lang)
+                # "Nothing found" wording is only honest when a tool really
+                # ran; if every call was rejected, keep the model's own reply.
                 return self._finish(self._reply_text(msg), executor=executor, lang=lang,
-                                    tools_used=tools_used, location_not_shared=location_not_shared)
+                                    tools_used=any_tool_ok, location_not_shared=location_not_shared)
             # Replay the COMPLETE assistant message exactly as returned —
             # never reconstruct it or drop fields.
             convo.append(dict(msg))
@@ -316,6 +325,7 @@ class MuseSparkService:
                 tools_used = True
                 try:
                     result = await executor.execute(name, args)
+                    any_tool_ok = True
                 except Exception as e:  # tool errors go back to the model as data, never crash chat
                     result = {"error": str(e)[:200]}
                     log.warning("tool %s rejected: %s", name, result["error"])
@@ -324,6 +334,8 @@ class MuseSparkService:
                 convo.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(result)[:4000]})
 
         # Tool loop exhausted: one final no-tools turn so the user still gets an answer.
+        if not any_tool_ok and GroundedAssistant.parking_intent(last_user):
+            return await GroundedAssistant().ask(messages=messages, executor=executor, lang=lang)
         data = await self._chat({"model": self._s.muse_spark_model, "messages": convo, "temperature": 0.2, "max_completion_tokens": 400}, deadline=deadline)
         return self._finish(self._reply_text(self._message(data)), executor=executor, lang=lang,
-                            tools_used=tools_used, location_not_shared=location_not_shared)
+                            tools_used=any_tool_ok, location_not_shared=location_not_shared)

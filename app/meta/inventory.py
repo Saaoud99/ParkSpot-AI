@@ -7,12 +7,21 @@ never from the model.
 """
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from .config import Settings
 from .errors import NotConfigured, ProviderUnavailable
 
+log = logging.getLogger("parkspot.meta.inventory")
+
 FACILITY_FIELDS = "id,name,name_ar,city,address,lat,lng,price_per_hour_cents,available,capacity,authorized_capacity,total_capacity,active,features,rating,open_24h"
+# Columns that exist before migration 0001_admin.sql has been applied.
+# `authorized_capacity`, `total_capacity` and `active` are added by 0001;
+# without them PostgREST answers 400 "column ... does not exist" (42703).
+LEGACY_FACILITY_FIELDS = "id,name,name_ar,city,address,lat,lng,price_per_hour_cents,available,capacity,features,rating,open_24h"
+_UNDEFINED_COLUMN = "42703"
 
 
 def effective_available(row: dict) -> int:
@@ -46,6 +55,9 @@ class Inventory:
     def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
         self._s = settings
         self._transport = transport
+        # Flipped to True the first time the database proves it lacks the
+        # 0001 columns; later reads use the legacy column set directly.
+        self.legacy_schema = False
 
     def _client(self, user_jwt: str | None) -> httpx.AsyncClient:
         if not (self._s.supabase_url and self._s.supabase_publishable_key):
@@ -58,15 +70,46 @@ class Inventory:
             timeout=self._s.provider_timeout_s, transport=self._transport,
         )
 
+    @staticmethod
+    def _undefined_column(r: httpx.Response) -> bool:
+        if r.status_code != 400:
+            return False
+        try:
+            body = r.json()
+        except ValueError:
+            return False
+        return isinstance(body, dict) and str(body.get("code")) == _UNDEFINED_COLUMN
+
     async def _get(self, path: str, params: dict, user_jwt: str | None) -> list[dict]:
+        if self.legacy_schema and params.get("select") == FACILITY_FIELDS:
+            params = {**params, "select": LEGACY_FACILITY_FIELDS}
         try:
             async with self._client(user_jwt) as c:
                 r = await c.get(path, params=params)
+                if (self._undefined_column(r) and params.get("select") == FACILITY_FIELDS):
+                    # Database predates migration 0001: fall back to the
+                    # original columns so search keeps working. Availability
+                    # then clamps to `capacity` (effective_available) and every
+                    # facility counts as active. The admin tables still need
+                    # the migration — say so loudly, once.
+                    if not self.legacy_schema:
+                        log.warning("facilities table lacks the 0001_admin.sql columns "
+                                    "(authorized_capacity/total_capacity/active); using the legacy "
+                                    "column set. Run drizzle/migrations/0001..0003 in Supabase.")
+                        self.legacy_schema = True
+                    r = await c.get(path, params={**params, "select": LEGACY_FACILITY_FIELDS})
         except httpx.TimeoutException:
             raise ProviderUnavailable("Inventory lookup timed out.")
         except httpx.HTTPError:
             raise ProviderUnavailable("Inventory is unreachable.")
         if r.status_code >= 400:
+            detail = ""
+            try:
+                msg = r.json().get("message")
+                detail = f": {str(msg)[:120]}" if msg else ""
+            except (ValueError, AttributeError):
+                pass
+            log.warning("inventory %s -> HTTP %s%s", path, r.status_code, detail)
             raise ProviderUnavailable(f"Inventory lookup failed (HTTP {r.status_code}).")
         data = r.json()
         return data if isinstance(data, list) else []

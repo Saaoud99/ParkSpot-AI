@@ -175,7 +175,8 @@ class FakeDB:
         return httpx.Response(404, json={"message": "unknown rpc"})
 
 
-def make_client(db: FakeDB, **settings_overrides) -> TestClient:
+def make_client(db: FakeDB, health_transport: httpx.AsyncBaseTransport | None = None,
+                **settings_overrides) -> TestClient:
     settings = Settings(supabase_url="https://fake.supabase.co",
                         supabase_publishable_key="publishable-test",
                         **settings_overrides)
@@ -187,7 +188,8 @@ def make_client(db: FakeDB, **settings_overrides) -> TestClient:
                             content={"error": {"code": exc.code, "message": exc.message}})
 
     app.include_router(build_admin_router(settings, FakeAuth(),
-                                          httpx.MockTransport(db.handle)))
+                                          httpx.MockTransport(db.handle),
+                                          health_transport=health_transport))
     return TestClient(app)
 
 
@@ -509,13 +511,97 @@ def test_ai_status_never_leaks_secrets(env):
     assert spark["base_url_host"] == "api.meta.ai"
 
 
+def test_ai_status_reports_every_module_and_backend_identity(env):
+    client, _ = env
+    body = client.get("/api/v1/admin/ai/status", headers=ADMIN).json()
+    assert set(body["services"]) == {"muse_spark", "muse_voice", "sam", "easyocr"}
+    assert set(body["flags"]) == {"muse_spark", "muse_voice", "sam", "easyocr"}
+    for row in body["services"].values():
+        assert set(row) >= {"label", "configured", "enabled", "active", "state", "updated_at", "updated_by"}
+    assert body["services"]["sam"]["state"] == "unconfigured"
+    assert body["services"]["sam"]["active"] is False
+    assert set(body["backend"]) == {"instance_id", "started_at", "uptime_s", "version"}
+    assert body["flag_state"]["persistent"] is True  # conftest points it at a temp file
+
+
 def test_ai_health_easyocr_is_safe(env):
     client, _ = env
     r = client.post("/api/v1/admin/ai/health/easyocr", headers=ADMIN)
     assert r.status_code == 200
     data = r.json()
     assert data["service"] == "easyocr"
-    assert set(data) >= {"configured", "reachable", "tested_ok", "detail"}
+    assert set(data) >= {"configured", "reachable", "tested_ok", "detail", "status", "label", "checked_at"}
+    assert data["reachable"] is None  # local package: nothing to reach
+    assert data["status"] in {"ok", "unconfigured"}
+
+
+def test_ai_health_unknown_service_422(env):
+    client, _ = env
+    assert client.post("/api/v1/admin/ai/health/gpt", headers=ADMIN).status_code == 422
+
+
+def test_ai_health_unconfigured_modules_are_honest(env):
+    client, _ = env
+    for svc in ("muse_spark", "muse_voice", "sam"):
+        data = client.post(f"/api/v1/admin/ai/health/{svc}", headers=ADMIN).json()
+        assert data["status"] == "unconfigured", svc
+        assert data["configured"] is False and data["reachable"] is False and data["tested_ok"] is False
+
+
+def _health_transport(spark_status: int = 200, sam_fail: bool = True) -> httpx.MockTransport:
+    def handler(req: httpx.Request) -> httpx.Response:
+        host = req.url.host
+        if host == "api.meta.ai":
+            assert req.headers.get("Authorization") == "Bearer sk-PROBE"
+            return httpx.Response(spark_status, json={"data": []})
+        if host == "sam.internal":
+            if sam_fail:
+                raise httpx.ConnectError("refused", request=req)
+            return httpx.Response(404, text="not found")
+        return httpx.Response(500)
+    return httpx.MockTransport(handler)
+
+
+def test_ai_health_all_probes_in_parallel_and_never_leaks(env):
+    client = make_client(FakeDB(), health_transport=_health_transport(),
+                         meta_model_api_key="sk-PROBE", muse_spark_model="m",
+                         sam_service_url="https://sam.internal", sam_model="sam3.1")
+    r = client.get("/api/v1/admin/ai/health", headers=ADMIN)
+    assert r.status_code == 200
+    assert "sk-PROBE" not in r.text
+    body = r.json()
+    svcs = body["services"]
+    assert svcs["muse_spark"]["status"] == "ok" and svcs["muse_spark"]["reachable"] is True
+    assert svcs["muse_spark"]["latency_ms"] is not None
+    assert svcs["sam"]["status"] == "unreachable" and svcs["sam"]["reachable"] is False
+    assert "ConnectError" in svcs["sam"]["detail"]
+    assert svcs["muse_voice"]["status"] == "unconfigured"
+    assert body["status"] == "degraded"
+    assert body["counts"]["unreachable"] == 1
+    assert set(body["backend"]) == {"instance_id", "started_at", "uptime_s", "version"}
+
+
+def test_ai_health_sam_any_non_5xx_counts_as_up_and_rejected_key_is_degraded(env):
+    client = make_client(FakeDB(), health_transport=_health_transport(spark_status=401, sam_fail=False),
+                         meta_model_api_key="sk-PROBE", muse_spark_model="m",
+                         sam_service_url="https://sam.internal")
+    sam = client.post("/api/v1/admin/ai/health/sam", headers=ADMIN).json()
+    assert sam["status"] == "ok" and sam["tested_ok"] is True and "HTTP 404" in sam["detail"]
+    spark = client.get("/api/v1/admin/ai/health/muse_spark", headers=ADMIN).json()
+    assert spark["status"] == "degraded" and spark["reachable"] is True
+    assert "credentials" in spark["detail"]
+
+
+def test_ai_health_disabled_module_still_probed_but_reported_disabled(env):
+    client = make_client(FakeDB(), health_transport=_health_transport(),
+                         meta_model_api_key="sk-PROBE", muse_spark_model="m")
+    try:
+        FLAGS.set("muse_spark", False)
+        data = client.post("/api/v1/admin/ai/health/muse_spark", headers=ADMIN).json()
+        assert data["status"] == "disabled"
+        assert data["enabled"] is False and data["reachable"] is True and data["tested_ok"] is True
+    finally:
+        FLAGS.set("muse_spark", True)
 
 
 def test_ai_toggle_writes_audit(env):
@@ -529,6 +615,42 @@ def test_ai_toggle_writes_audit(env):
         assert any(a["action"] == "ai.toggle" for a in db.audit_logs)
     finally:
         FLAGS.set("voice", True)
+
+
+def test_ai_toggle_per_module_and_legacy_group(env):
+    client, db = env
+    try:
+        r = client.post("/api/v1/admin/ai/toggle", headers=ADMIN,
+                        json={"feature": "easyocr", "enabled": False, "reason": "OCR maintenance"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modules"] == ["easyocr"] and body["enabled"] is False
+        assert body["persisted"] is True
+        assert body["flags"]["easyocr"] is False and body["flags"]["sam"] is True
+        assert body["services"]["easyocr"]["state"] == "disabled"
+        assert body["services"]["easyocr"]["updated_by"] == ADMIN_ID
+        audit = [a for a in db.audit_logs if a["action"] == "ai.toggle"][-1]
+        assert audit["metadata"]["modules"] == ["easyocr"]
+
+        r = client.post("/api/v1/admin/ai/toggle", headers=ADMIN,
+                        json={"feature": "vision", "enabled": False, "reason": "Camera outage"})
+        assert r.json()["modules"] == ["sam", "easyocr"]
+        assert FLAGS.get("sam") is False and FLAGS.get("easyocr") is False
+
+        r = client.post("/api/v1/admin/ai/toggle", headers=ADMIN,
+                        json={"feature": "openai", "enabled": True, "reason": "nope"})
+        assert r.status_code == 422
+    finally:
+        FLAGS.set("vision", True)
+
+
+def test_ai_toggle_requires_admin(env):
+    client, _ = env
+    body = {"feature": "sam", "enabled": False, "reason": "test"}
+    assert client.post("/api/v1/admin/ai/toggle", headers=PARTNER, json=body).status_code == 403
+    assert client.post("/api/v1/admin/ai/toggle", json=body).status_code == 401
+    assert client.get("/api/v1/admin/ai/health", headers=DRIVER).status_code == 403
+    assert FLAGS.get("sam") is True
 
 
 # ------------------------------------------------------- cameras / incidents

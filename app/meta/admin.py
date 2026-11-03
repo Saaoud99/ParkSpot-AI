@@ -26,7 +26,9 @@ from pydantic import BaseModel, Field
 from .auth import Authenticator, Caller
 from .config import Settings
 from .errors import Forbidden, NotConfigured, ProviderUnavailable, ValidationFailed
-from .flags import FLAGS
+from . import runtime
+from .flags import FLAGS, LABELS, MODULES
+from .health import easyocr_installed, probe, probe_all
 from .metrics import METRICS
 
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
@@ -177,7 +179,9 @@ class IncidentPatch(BaseModel):
 
 
 class ToggleBody(BaseModel):
-    feature: str = Field(pattern="^(assistant|voice|vision)$")
+    # One dashboard module (muse_spark / muse_voice / sam / easyocr) or a
+    # legacy group alias (assistant / voice / vision → sam + easyocr).
+    feature: str = Field(pattern="^(muse_spark|muse_voice|sam|easyocr|assistant|voice|vision)$")
     enabled: bool
     reason: str = Field(min_length=3, max_length=500)
 
@@ -194,7 +198,8 @@ def _uuid(value: str) -> str:
 
 
 def build_admin_router(settings: Settings, authenticator: Authenticator,
-                       transport: httpx.AsyncBaseTransport | None = None) -> APIRouter:
+                       transport: httpx.AsyncBaseTransport | None = None,
+                       health_transport: httpx.AsyncBaseTransport | None = None) -> APIRouter:
     store = AdminStore(settings, transport)
     router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -458,36 +463,65 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         return {"facility_id": fid, "price_per_hour_cents": body.price_per_hour_cents}
 
     # ------------------------------------------------------------------- AI
+    def _module_rows() -> dict:
+        """One row per dashboard card. ``enabled`` is the admin switch,
+        ``configured`` the env state, ``active`` their conjunction."""
+        s = settings
+        flags = FLAGS.details()
+        base = {
+            "muse_spark": {"configured": s.muse_configured, "model": s.muse_spark_model,
+                           "base_url_host": _host(s.meta_base_url)},
+            "muse_voice": {"configured": s.voice_configured, "model": s.muse_voice_model,
+                           "base_url_host": _host(s.meta_voice_base_url),
+                           "env_flag_on": s.muse_voice_enabled},
+            "sam": {"configured": s.sam_configured, "model": s.sam_model,
+                    "service_host": _host(s.sam_service_url)},
+            "easyocr": {"configured": easyocr_installed(), "min_confidence": s.ocr_min_confidence},
+        }
+        rows = {}
+        for m in MODULES:
+            enabled = flags[m]["enabled"]
+            configured = bool(base[m]["configured"])
+            rows[m] = {
+                "label": LABELS[m], **base[m], "enabled": enabled, "active": enabled and configured,
+                "state": "active" if enabled and configured else ("disabled" if not enabled else "unconfigured"),
+                "updated_at": flags[m]["updated_at"], "updated_by": flags[m]["updated_by"],
+            }
+        return rows
+
     @router.get("/ai/status")
     async def ai_status(authorization: str | None = Header(default=None)) -> dict:
-        c = await admin(authorization)
-        s = settings
+        await admin(authorization)
         return {
+            "backend": runtime.info(),
             "flags": FLAGS.snapshot(),
+            "flag_state": FLAGS.state_info(),
             "metrics": METRICS.snapshot(),
-            "services": {
-                "muse_spark": {"configured": s.muse_configured, "model": s.muse_spark_model,
-                               "base_url_host": _host(s.meta_base_url), "enabled": FLAGS.get("assistant")},
-                "muse_voice": {"configured": s.voice_configured, "model": s.muse_voice_model,
-                               "enabled": FLAGS.get("voice") and s.muse_voice_enabled},
-                "sam": {"configured": s.sam_configured, "model": s.sam_model,
-                        "service_host": _host(s.sam_service_url), "enabled": FLAGS.get("vision")},
-                "easyocr": {"configured": _easyocr_installed(), "min_confidence": s.ocr_min_confidence,
-                            "enabled": FLAGS.get("vision")},
-            },
+            "services": _module_rows(),
         }
 
+    @router.get("/ai/health")
+    async def ai_health_all(authorization: str | None = Header(default=None)) -> dict:
+        """Safe reachability probe of all four modules, in parallel."""
+        await admin(authorization)
+        return await probe_all(settings, transport=health_transport)
+
     @router.post("/ai/health/{service}")
+    @router.get("/ai/health/{service}")
     async def ai_health(service: str, authorization: str | None = Header(default=None)) -> dict:
-        c = await admin(authorization)
-        return await _probe(settings, service)
+        await admin(authorization)
+        return await probe(settings, service, transport=health_transport)
 
     @router.post("/ai/toggle")
     async def ai_toggle(body: ToggleBody, authorization: str | None = Header(default=None)) -> dict:
         c = await admin(authorization)
-        FLAGS.set(body.feature, body.enabled)
-        await store.audit(c, "ai.toggle", "ai", body.feature, body.reason, {"enabled": body.enabled})
-        return {"feature": body.feature, "enabled": body.enabled}
+        modules = FLAGS.set(body.feature, body.enabled, actor=c.user_id)
+        await store.audit(c, "ai.toggle", "ai", body.feature, body.reason,
+                          {"enabled": body.enabled, "modules": modules})
+        state = FLAGS.state_info()
+        return {"feature": body.feature, "modules": modules, "enabled": body.enabled,
+                "persisted": bool(state["persisted"]) if state["persistent"] else False,
+                "flag_state": state, "flags": FLAGS.snapshot(), "services": _module_rows()}
 
     # --------------------------------------------------------------- cameras
     @router.get("/cameras")
@@ -669,42 +703,3 @@ def _host(url: str | None) -> str | None:
         return url.split("//", 1)[-1].split("/", 1)[0]
     except Exception:
         return None
-
-
-def _easyocr_installed() -> bool:
-    import importlib.util
-    return importlib.util.find_spec("easyocr") is not None
-
-
-async def _probe(settings: Settings, service: str) -> dict:
-    """Safe predefined health checks: HTTP reachability only, no inference,
-    no tool execution, credentials never returned."""
-    targets = {
-        "muse_spark": (settings.meta_base_url + "/models" if settings.muse_configured else None,
-                       settings.meta_model_api_key),
-        "muse_voice": (settings.meta_voice_base_url + "/models" if settings.voice_configured else None,
-                       settings.meta_voice_api_key),
-        "sam": (settings.sam_service_url, settings.sam_service_api_key),
-        "easyocr": (None, None),
-    }
-    if service not in targets:
-        raise ValidationFailed(f"Unknown service: {service}")
-    if service == "easyocr":
-        return {"service": service, "configured": _easyocr_installed(), "reachable": None,
-                "tested_ok": _easyocr_installed(),
-                "detail": "EasyOCR package importable in this backend environment."
-                if _easyocr_installed() else "EasyOCR is not installed (requirements-vision.txt)."}
-    url, key = targets[service]
-    if not url:
-        return {"service": service, "configured": False, "reachable": False, "tested_ok": False,
-                "detail": "Not configured (credentials/URL missing)."}
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            r = await client.get(url, headers=headers)
-        return {"service": service, "configured": True, "reachable": True,
-                "tested_ok": r.status_code == 200,
-                "detail": f"Endpoint responded with HTTP {r.status_code} (no inference performed)."}
-    except httpx.HTTPError:
-        return {"service": service, "configured": True, "reachable": False, "tested_ok": False,
-                "detail": "Endpoint unreachable (network/timeout)."}

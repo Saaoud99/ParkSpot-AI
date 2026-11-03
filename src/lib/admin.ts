@@ -41,9 +41,13 @@ export const adminApi = {
   bookings: (q: string) => get(`/bookings?${q}`),
   cancelBooking: (id: string, reason: string) => post(`/bookings/${id}/cancel`, { reason }),
   aiStatus: () => get("/ai/status"),
+  /** Safe reachability probe of one module (muse_spark | muse_voice | sam | easyocr). */
   aiHealth: (service: string) => post(`/ai/health/${service}`),
-  aiToggle: (feature: string, enabled: boolean, reason: string) =>
-    post("/ai/toggle", { feature, enabled, reason }),
+  /** Probe all four modules in one round trip. */
+  aiHealthAll: () => get("/ai/health"),
+  /** Switch one module on/off; audited, persisted across backend restarts. */
+  aiToggle: (module: string, enabled: boolean, reason: string) =>
+    post("/ai/toggle", { feature: module, enabled, reason }),
   cameras: () => get("/cameras"),
   createCamera: (body: unknown) => post("/cameras", body),
   updateCamera: (id: string, body: unknown) => patch(`/cameras/${id}`, body),

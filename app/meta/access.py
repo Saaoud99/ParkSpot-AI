@@ -21,12 +21,21 @@ class AccessVerificationService:
         self._inv = inventory
 
     async def analyze(self, *, image: bytes, content_type: str, user_jwt: str,
-                      facility_id: str | None = None) -> dict:
+                      facility_id: str | None = None, ocr_enabled: bool = True) -> dict:
+        """Detect vehicles, read the plate, verify against real bookings.
+
+        ``ocr_enabled=False`` (EasyOCR switched off by an admin) still runs
+        SAM detection but skips plate reading: the frame is reported with
+        ``reason="ocr_disabled"`` and access stays ``not_granted``.
+        """
         SamVisionService.validate_image(image, max_bytes=self._sam._s.max_image_bytes)
         detections = await self._sam.segment_vehicles(image, content_type)
         vehicles = [d for d in detections if "plate" not in d["label"].lower()]
         region = best_plate_region(detections)
-        ocr = await self._ocr.read_plate(image, region["box"] if region else None)
+        if ocr_enabled:
+            ocr = await self._ocr.read_plate(image, region["box"] if region else None)
+        else:
+            ocr = {"plate": None, "confidence": 0.0, "accepted": False}
 
         result: dict = {
             "vehicles_detected": len(vehicles),
@@ -38,6 +47,9 @@ class AccessVerificationService:
             "verified_booking": None,
             "access": "not_granted",
         }
+        if not ocr_enabled:
+            result["reason"] = "ocr_disabled"
+            return result
         if not ocr["accepted"] or not ocr["plate"]:
             result["reason"] = "plate_not_read_confidently"
             return result

@@ -46,6 +46,16 @@ export const metaUnwrap = unwrap;
 
 export const metaBackendConfigured = () => BASE.length > 0;
 
+/** Process identity of the backend; a changed instance_id means it restarted. */
+export type BackendInfo = {
+  instance_id: string;
+  started_at: string;
+  uptime_s: number;
+  version: string;
+};
+
+export type AiModule = "muse_spark" | "muse_voice" | "sam" | "easyocr";
+
 export type MetaStatus = {
   assistant: string;
   vision_sam: string;
@@ -54,6 +64,9 @@ export type MetaStatus = {
   voice_key_present?: boolean;
   voice_max_seconds?: number;
   voice_max_upload_mb?: number;
+  /** Admin runtime switches per AI module (true = on). */
+  modules?: Partial<Record<AiModule, boolean>>;
+  backend?: BackendInfo;
 };
 
 /** Recording cap shared by all microphone UIs: backend-configured, 30 s safe default. */
@@ -101,6 +114,28 @@ async function unwrap(res: Response) {
 export async function fetchMetaStatus(): Promise<MetaStatus> {
   if (!metaBackendConfigured()) throw new Error("meta-backend-not-configured");
   return unwrap(await fetch(`${BASE}/api/v1/meta/status`));
+}
+
+/**
+ * Unauthenticated liveness probe. Resolves with the backend's process
+ * identity, or `null` when the backend is unreachable (network error,
+ * timeout, non-2xx). Never throws, so callers can render "unreachable"
+ * instead of an error state.
+ */
+export async function fetchBackendHealth(timeoutMs = 4000): Promise<BackendInfo | null> {
+  if (!metaBackendConfigured()) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BASE}/healthz`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Partial<BackendInfo>;
+    return typeof body.instance_id === "string" ? (body as BackendInfo) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export type MetaFacility = {

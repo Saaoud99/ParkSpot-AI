@@ -42,3 +42,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/*.deb
+
+# Runtime AI module switches (admin toggles, backend-local state)
+.ai_flags.json
+.ai_flags.json.tmp
+.local-ai-logs/
+.local-ai-cache/

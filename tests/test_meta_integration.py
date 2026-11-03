@@ -930,3 +930,101 @@ def test_sam_requires_a_real_http_url():
     assert Settings(sam_service_url="LLM_2187466105533446_not-a-url").sam_configured is False
     assert Settings(sam_service_url="https://sam.internal:9000").sam_configured is True
     assert Settings(sam_service_url=None).sam_configured is False
+
+
+# ------------------------------------------------- small-model tolerance
+
+def test_search_args_cleaning_tolerates_sloppy_models():
+    from app.meta.tools import _clean_search_args
+    assert _clean_search_args({"city": "casablanca", "max_price_mad": 0, "limit": 0, "bogus": 1}) == {"city": "Casablanca"}
+    assert _clean_search_args({"feature": "EV charging", "max_price_mad": 12.5, "limit": 50}) == {
+        "feature": "ev", "max_price_mad": 12.5, "limit": 8}
+    assert _clean_search_args({"city": "Paris"}) == {"city": "Paris"}  # unknown city is still rejected later
+    assert _clean_search_args({"city": "null", "feature": "None"}) == {}  # textual nulls are "unset"
+    assert _clean_search_args(None) == {}
+
+
+@pytest.mark.asyncio
+async def test_search_tool_accepts_zero_price_filter_and_lowercase_city():
+    ex = ToolExecutor(FakeInventory(), "jwt")
+    res = await ex.execute("search_facilities", {"city": "casablanca", "max_price_mad": 0})
+    assert res["count"] >= 1
+    with pytest.raises(ValidationFailed):
+        await ex.execute("search_facilities", {"city": "Paris"})
+
+
+@pytest.mark.asyncio
+async def test_muse_all_tool_calls_rejected_falls_back_to_grounded():
+    """A model that only ever sends invalid tool arguments must not produce
+    "nothing found": the grounded assistant answers from real inventory."""
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "calculate_booking_quote",
+                                                              "arguments": json.dumps({"facility_id": "nope", "hours": 0})}}]}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "Sorry, nothing found."}}]})
+
+    svc = configured(handler)
+    ex = ToolExecutor(FakeInventory(), "jwt")
+    res = await svc.ask(messages=[{"role": "user", "content": "cheapest parking in Casablanca for 3 hours"}], executor=ex)
+    assert res["mode"] == "grounded_fallback"
+    assert res["facilities"], "grounded assistant must search the real inventory"
+
+
+@pytest.mark.asyncio
+async def test_muse_rejected_tool_call_on_small_talk_keeps_model_reply():
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "get_facility_details", "arguments": json.dumps({"facility_id": "x"})}}]}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "Hi! I can find real parking for you."}}]})
+
+    res = await configured(handler).ask(messages=[{"role": "user", "content": "hello, what can you do?"}],
+                                        executor=ToolExecutor(FakeInventory(), "jwt"))
+    assert res["reply"] == "Hi! I can find real parking for you."
+    assert res["facilities"] == []
+
+
+# ------------------------------------------ database before migration 0001
+
+@pytest.mark.asyncio
+async def test_inventory_falls_back_to_legacy_columns_when_0001_not_applied():
+    from app.meta.inventory import FACILITY_FIELDS, LEGACY_FACILITY_FIELDS
+    selects: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        sel = req.url.params.get("select")
+        selects.append(sel)
+        if "authorized_capacity" in sel:
+            return httpx.Response(400, json={"code": "42703", "message": "column facilities.authorized_capacity does not exist"})
+        return httpx.Response(200, json=[{"id": "f1", "name": "Lot", "city": "Casablanca", "address": "x", "lat": 0, "lng": 0,
+                                          "price_per_hour_cents": 800, "available": 40, "capacity": 30,
+                                          "features": [], "rating": 4, "open_24h": True}])
+
+    inv = Inventory(Settings(supabase_url="https://db.test", supabase_publishable_key="k"),
+                    transport=httpx.MockTransport(handler))
+    rows = await inv.search_facilities(city="Casablanca", user_jwt="jwt")
+    assert [r["id"] for r in rows] == ["f1"]
+    assert rows[0]["available"] == 30  # clamped to legacy capacity
+    assert inv.legacy_schema is True
+    assert selects == [FACILITY_FIELDS, LEGACY_FACILITY_FIELDS]
+    await inv.get_facility("f1", user_jwt="jwt")
+    assert selects[-1] == LEGACY_FACILITY_FIELDS  # no second probe once known
+
+
+@pytest.mark.asyncio
+async def test_inventory_other_400s_still_fail_honestly():
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"code": "PGRST100", "message": "bad filter"})
+
+    inv = Inventory(Settings(supabase_url="https://db.test", supabase_publishable_key="k"),
+                    transport=httpx.MockTransport(handler))
+    with pytest.raises(ProviderUnavailable):
+        await inv.search_facilities(city="Casablanca", user_jwt="jwt")
+    assert inv.legacy_schema is False

@@ -43,6 +43,7 @@ function Assistant() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const coordsRef = useRef<{ lat: number; lng: number } | null>(null); // device GPS, only after the user shares it
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -151,6 +152,12 @@ function Assistant() {
     }
   };
 
+  // Voice turns are sent through the same path as typed ones. The recorder's
+  // onstop closure is created when recording starts, so it reads the latest
+  // `send` (and therefore the latest message list) through a ref.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+
   const toggleMic = async () => {
     if (recording) {
       recorderRef.current?.stop();
@@ -169,14 +176,26 @@ function Assistant() {
         }
         stream.getTracks().forEach((tr) => tr.stop());
         setRecording(false);
+        setTranscribing(true);
         try {
           const { text } = await metaTranscribe(
             new Blob(chunks, { type: rec.mimeType || "audio/webm" }),
             lang,
           );
-          setInput(text);
-        } catch {
-          setInput("");
+          setTranscribing(false);
+          // Transcript becomes the user's message and is answered right away;
+          // it stays visible in the thread so a misheard phrase is obvious.
+          if (text.trim()) await sendRef.current(text.trim());
+          else setMsgs((m) => [...m, { role: "assistant", content: t("voiceNoSpeech") }]);
+        } catch (e) {
+          setTranscribing(false);
+          setMsgs((m) => [
+            ...m,
+            {
+              role: "assistant",
+              content: e instanceof Error && e.message ? e.message : t("voiceFailed"),
+            },
+          ]);
         }
       };
       recorderRef.current = rec;
@@ -264,7 +283,8 @@ function Assistant() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={recording ? t("listening") : t("askAI")}
+          placeholder={recording ? t("listening") : transcribing ? t("transcribing") : t("askAI")}
+          disabled={transcribing}
           className="h-11 flex-1 rounded-full border bg-card px-4 text-sm outline-none focus:border-primary"
         />
         {voiceEnabled && (
