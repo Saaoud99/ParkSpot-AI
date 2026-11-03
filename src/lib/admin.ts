@@ -23,10 +23,46 @@ const post = (p: string, body?: unknown) =>
   call(p, { method: "POST", body: body ? JSON.stringify(body) : undefined });
 const patch = (p: string, body: unknown) =>
   call(p, { method: "PATCH", body: JSON.stringify(body) });
+const del = (p: string, body: unknown) =>
+  call(p, { method: "DELETE", body: JSON.stringify(body) });
+
+export type AdminUser = {
+  id: string;
+  display_name?: string;
+  vehicle_plate?: string;
+  status: string;
+  roles: string[];
+  [key: string]: unknown;
+};
 
 export const adminApi = {
   overview: () => get("/overview"),
   users: (q: string) => get(`/users?${q}`),
+  /** Every user: pages through GET /users (backend caps limit at 200/page)
+   * until the reported total is collected — not just the first page. */
+  usersAll: async (search = ""): Promise<{ users: AdminUser[]; total: number }> => {
+    const pageSize = 200;
+    const all: AdminUser[] = [];
+    let total = Number.POSITIVE_INFINITY;
+    let offset = 0;
+    while (all.length < total) {
+      const params = new URLSearchParams({
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+      if (search.trim()) params.set("search", search.trim());
+      const page = (await get(`/users?${params.toString()}`)) as {
+        users?: AdminUser[];
+        total?: number;
+      };
+      const rows = page.users ?? [];
+      total = page.total ?? rows.length;
+      all.push(...rows);
+      if (rows.length === 0) break;
+      offset += rows.length;
+    }
+    return { users: all, total: all.length };
+  },
   userDetail: (id: string) => get(`/users/${id}`),
   suspendUser: (id: string, reason: string) => post(`/users/${id}/suspend`, { reason }),
   reactivateUser: (id: string, reason: string) => post(`/users/${id}/reactivate`, { reason }),
@@ -35,6 +71,7 @@ export const adminApi = {
   facilities: () => get("/facilities"),
   createFacility: (body: unknown) => post("/facilities", body),
   updateFacility: (id: string, body: unknown) => patch(`/facilities/${id}`, body),
+  deleteFacility: (id: string, reason: string) => del(`/facilities/${id}`, { reason }),
   setPrice: (id: string, price_per_hour_cents: number, reason: string) =>
     patch(`/facilities/${id}/price`, { price_per_hour_cents, reason }),
   pricing: () => get("/pricing"),

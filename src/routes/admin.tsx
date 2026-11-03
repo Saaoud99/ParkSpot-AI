@@ -237,19 +237,24 @@ function UsersSection({ confirm }: { confirm: (s: ConfirmState) => void }) {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const { data, isLoading } = useSection(`users-${search}`, () =>
-    adminApi.users(`limit=100&search=${encodeURIComponent(search)}`),
+    adminApi.usersAll(search),
   );
   const invalidate = () => qc.invalidateQueries({ queryKey: ["admin"] });
   const roleName = (r: string) =>
     r === "admin" ? t("roleAdmin") : r === "partner" ? t("rolePartner") : t("roleUser");
   return (
     <div className="space-y-3">
-      <input
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder={`${t("searchLbl")}…`}
-        className={inputCls}
-      />
+      <div className="flex items-center gap-2">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={`${t("searchLbl")}…`}
+          className={inputCls}
+        />
+        <span className="shrink-0 text-sm text-muted-foreground">
+          {t("totalDrivers")}: {data?.total ?? 0}
+        </span>
+      </div>
       <Card className="overflow-x-auto p-0">
         <table className="w-full min-w-[720px] text-sm">
           <thead>
@@ -619,66 +624,346 @@ function BookingsSection({ confirm }: { confirm: (s: ConfirmState) => void }) {
   );
 }
 
+type ParkingRow = {
+  id: string;
+  name: string;
+  name_ar?: string;
+  city?: string;
+  address?: string;
+  lat?: number;
+  lng?: number;
+  price_per_hour_cents: number;
+  available?: number;
+  authorized_capacity?: number;
+  capacity?: number;
+  total_capacity?: number;
+  open_24h?: boolean;
+  active?: boolean;
+};
+
 function PricingSection({ confirm }: { confirm: (s: ConfirmState) => void }) {
   const { t, lang } = useI18n();
   const qc = useQueryClient();
   const { data } = useSection("pricing", adminApi.pricing);
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["admin"] });
+  // Inline price editors, in MAD/hr (converted to integer cents for the API).
   const [prices, setPrices] = useState<Record<string, string>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const blankForm = () => ({
+    name: "",
+    name_ar: "",
+    city: "Casablanca",
+    address: "",
+    lat: "33.59",
+    lng: "-7.62",
+    priceMad: "15",
+    total: "100",
+    authorized: "50",
+    available: "50",
+    open24: true,
+    active: true,
+  });
+  const [form, setForm] = useState(blankForm);
+  const upd = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
+
+  const startEdit = (f: ParkingRow) => {
+    setEditingId(f.id);
+    setForm({
+      name: f.name ?? "",
+      name_ar: f.name_ar ?? "",
+      city: f.city ?? "",
+      address: f.address ?? "",
+      lat: String(f.lat ?? ""),
+      lng: String(f.lng ?? ""),
+      priceMad: String((f.price_per_hour_cents ?? 0) / 100),
+      total: String(f.total_capacity ?? f.capacity ?? 0),
+      authorized: String(f.authorized_capacity ?? f.capacity ?? 0),
+      available: String(f.available ?? 0),
+      open24: f.open_24h !== false,
+      active: f.active !== false,
+    });
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setForm(blankForm());
+  };
+
+  const submitForm = () => {
+    const priceCents = Math.round(Number(form.priceMad) * 100);
+    const total = Number(form.total);
+    const authorized = Number(form.authorized);
+    const available = Number(form.available);
+    const lat = Number(form.lat);
+    const lng = Number(form.lng);
+    if (
+      form.name.trim().length < 2 ||
+      form.name_ar.trim().length < 2 ||
+      form.city.trim().length < 2 ||
+      form.address.trim().length < 3
+    ) {
+      toast.error("Name, Arabic name, city and address are required.");
+      return;
+    }
+    if (!Number.isFinite(priceCents) || priceCents <= 0) {
+      toast.error(`${t("pricePerHour")} must be greater than 0.`);
+      return;
+    }
+    if (
+      ![total, authorized, available, lat, lng].every(Number.isFinite) ||
+      authorized > total ||
+      available > authorized
+    ) {
+      toast.error("Check capacities: available ≤ authorized ≤ total.");
+      return;
+    }
+    const payload = {
+      name: form.name.trim(),
+      name_ar: form.name_ar.trim(),
+      city: form.city.trim(),
+      address: form.address.trim(),
+      lat,
+      lng,
+      price_per_hour_cents: priceCents,
+      total_capacity: total,
+      authorized_capacity: authorized,
+      available,
+      open_24h: form.open24,
+      active: form.active,
+    };
+    if (editingId) {
+      confirm({
+        title: `${t("editParking")} — ${payload.name}`,
+        run: async (r) => {
+          await adminApi.updateFacility(editingId, { ...payload, reason: r });
+          invalidate();
+          cancelEdit();
+        },
+      });
+    } else {
+      void (async () => {
+        try {
+          await adminApi.createFacility({ ...payload, features: [] });
+          toast.success(t("saved"));
+          cancelEdit();
+          invalidate();
+        } catch (e) {
+          toast.error((e as Error).message);
+        }
+      })();
+    }
+  };
+
   return (
     <div className="space-y-3">
       <Card>
         <p className="text-sm text-muted-foreground">
-          {t("priceCents")} · bounds {data?.pricing_min_cents}–{data?.pricing_max_cents} · engine:{" "}
-          {data?.engine}
+          {t("pricePerHour")} · {mad(data?.pricing_min_cents ?? 100, lang)} –{" "}
+          {mad(data?.pricing_max_cents ?? 100_000, lang)} {t("perHour")} · engine:{" "}
+          {data?.engine ?? "fixed"}
         </p>
       </Card>
+
+      <Card>
+        <p className="mb-3 font-semibold">{editingId ? t("editParking") : t("addParking")}</p>
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <input
+            placeholder={t("name")}
+            value={form.name}
+            onChange={(e) => upd("name", e.target.value)}
+            className={inputCls}
+          />
+          <input
+            placeholder="الاسم"
+            value={form.name_ar}
+            onChange={(e) => upd("name_ar", e.target.value)}
+            className={inputCls}
+          />
+          <input
+            placeholder={t("cityLbl")}
+            value={form.city}
+            onChange={(e) => upd("city", e.target.value)}
+            className={inputCls}
+          />
+          <input
+            placeholder={t("addressLbl")}
+            value={form.address}
+            onChange={(e) => upd("address", e.target.value)}
+            className={inputCls}
+          />
+          <input
+            type="number"
+            step="0.0001"
+            placeholder="Lat"
+            value={form.lat}
+            onChange={(e) => upd("lat", e.target.value)}
+            className={inputCls}
+          />
+          <input
+            type="number"
+            step="0.0001"
+            placeholder="Lng"
+            value={form.lng}
+            onChange={(e) => upd("lng", e.target.value)}
+            className={inputCls}
+          />
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">{t("pricePerHour")}</span>
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              value={form.priceMad}
+              onChange={(e) => upd("priceMad", e.target.value)}
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">
+              {t("totalCapacityLbl")}
+            </span>
+            <input
+              type="number"
+              value={form.total}
+              onChange={(e) => upd("total", e.target.value)}
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">
+              {t("authorizedCapacityLbl")}
+            </span>
+            <input
+              type="number"
+              value={form.authorized}
+              onChange={(e) => upd("authorized", e.target.value)}
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">
+              {t("availableSpaces")}
+            </span>
+            <input
+              type="number"
+              value={form.available}
+              onChange={(e) => upd("available", e.target.value)}
+              className={inputCls}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={form.open24}
+              onChange={(e) => upd("open24", e.target.checked)}
+            />
+            {t("open24")}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={form.active}
+              onChange={(e) => upd("active", e.target.checked)}
+            />
+            {t("activeLbl")}
+          </label>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button className={btnCls} onClick={submitForm}>
+            {editingId ? t("save") : t("createLbl")}
+          </button>
+          {editingId && (
+            <button className={ghostCls} onClick={cancelEdit}>
+              {t("cancel")}
+            </button>
+          )}
+        </div>
+      </Card>
+
       <Card className="overflow-x-auto p-0">
-        <table className="w-full min-w-[640px] text-sm">
+        <table className="w-full min-w-[760px] text-sm">
           <thead>
             <tr className="border-b text-xs text-muted-foreground">
               <th className="p-3 text-start">{t("name")}</th>
-              <th className="p-3 text-start">{t("total")}</th>
-              <th className="p-3 text-start">{t("save")}</th>
+              <th className="p-3 text-start">{t("pricePerHour")}</th>
+              <th className="p-3 text-start">{t("availableSpaces")}</th>
+              <th className="p-3 text-start">{t("incidentStatus")}</th>
+              <th className="p-3 text-start">{t("actionsLbl")}</th>
             </tr>
           </thead>
           <tbody>
-            {(data?.facilities ?? []).map(
-              (f: { id: string; name: string; price_per_hour_cents: number }) => (
+            {(data?.facilities ?? []).map((f: ParkingRow) => {
+              const madValue = prices[f.id] ?? String(f.price_per_hour_cents / 100);
+              const cents = Math.round(Number(madValue) * 100);
+              return (
                 <tr key={f.id} className="border-b last:border-0">
-                  <td className="p-3 font-medium">{f.name}</td>
+                  <td className="p-3">
+                    <span className="font-medium">{f.name}</span>
+                    <br />
+                    <span className="text-xs text-muted-foreground">{f.city ?? "—"}</span>
+                  </td>
                   <td className="p-3">
                     <input
                       type="number"
-                      className="h-9 w-32 rounded-xl border bg-background px-2"
-                      value={prices[f.id] ?? String(f.price_per_hour_cents)}
+                      step="0.5"
+                      min="0"
+                      className="h-9 w-28 rounded-xl border bg-background px-2"
+                      value={madValue}
                       onChange={(e) => setPrices((p) => ({ ...p, [f.id]: e.target.value }))}
                     />
                     <span className="ms-2 text-xs text-muted-foreground">
-                      = {mad(Number(prices[f.id] ?? f.price_per_hour_cents), lang)}
+                      = {mad(Number.isFinite(cents) ? cents : 0, lang)}
                       {t("perHour")}
                     </span>
                   </td>
                   <td className="p-3">
-                    <button
-                      className={ghostCls}
-                      onClick={() =>
-                        confirm({
-                          title: `${t("aPricing")} — ${f.name}`,
-                          run: async (r) => {
-                            await adminApi.setPrice(f.id, Number(prices[f.id]), r);
-                            qc.invalidateQueries({ queryKey: ["admin"] });
-                          },
-                        })
-                      }
-                    >
-                      {t("save")}
-                    </button>
+                    {f.available ?? 0} / {f.authorized_capacity ?? f.capacity ?? 0}
+                  </td>
+                  <td className="p-3">{f.active === false ? t("disabledLbl") : t("enabledLbl")}</td>
+                  <td className="p-3">
+                    <div className="flex flex-wrap gap-1">
+                      <button
+                        className={ghostCls}
+                        disabled={!Number.isFinite(cents) || cents <= 0}
+                        onClick={() =>
+                          confirm({
+                            title: `${t("aPricing")} — ${f.name}`,
+                            run: async (r) => {
+                              await adminApi.setPrice(f.id, cents, r);
+                              invalidate();
+                            },
+                          })
+                        }
+                      >
+                        {t("save")}
+                      </button>
+                      <button className={ghostCls} onClick={() => startEdit(f)}>
+                        {t("editParking")}
+                      </button>
+                      <button
+                        className={ghostCls}
+                        onClick={() =>
+                          confirm({
+                            title: `${t("deleteParking")} — ${f.name}`,
+                            run: async (r) => {
+                              await adminApi.deleteFacility(f.id, r);
+                              if (editingId === f.id) cancelEdit();
+                              invalidate();
+                            },
+                          })
+                        }
+                      >
+                        {t("deleteParking")}
+                      </button>
+                    </div>
                   </td>
                 </tr>
-              ),
-            )}
+              );
+            })}
           </tbody>
         </table>
+        {data && data.facilities.length === 0 && (
+          <p className="p-4 text-sm text-muted-foreground">{t("noData")}</p>
+        )}
       </Card>
       <Card>
         <p className="mb-2 font-semibold">{t("history")}</p>
@@ -693,7 +978,12 @@ function PricingSection({ confirm }: { confirm: (s: ConfirmState) => void }) {
               metadata?: { price_per_hour_cents?: number };
             }) => (
               <li key={h.id} className="flex justify-between border-b py-1.5 last:border-0">
-                <span>{h.metadata?.price_per_hour_cents} cents</span>
+                <span>
+                  {h.metadata?.price_per_hour_cents != null
+                    ? mad(h.metadata.price_per_hour_cents, lang)
+                    : "—"}
+                  {t("perHour")}
+                </span>
                 <span className="text-xs text-muted-foreground">
                   {new Date(h.created_at).toLocaleString()}
                 </span>

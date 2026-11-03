@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -30,6 +31,8 @@ from . import runtime
 from .flags import FLAGS, LABELS, MODULES
 from .health import easyocr_installed, probe, probe_all
 from .metrics import METRICS
+
+log = logging.getLogger("parkspot.meta.admin")
 
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 ROLES = {"admin", "partner", "user"}
@@ -91,12 +94,57 @@ class AdminStore:
         data = await self.req("GET", f"/rest/v1/{table}", jwt, params=params)
         return data if isinstance(data, list) else []
 
+    async def get_all(self, table: str, jwt: str, *, page_size: int = 1000, **params) -> list[dict]:
+        """Fetch every row, paging with limit/offset.
+
+        A single PostgREST response is capped (Supabase default: 1000
+        rows) no matter how large `limit` is — asking for 5000 silently
+        returns only the first page. Loop until a short page arrives.
+        """
+        out: list[dict] = []
+        offset = 0
+        while True:
+            batch = await self.get(table, jwt, limit=str(page_size), offset=str(offset), **params)
+            out.extend(batch)
+            if len(batch) < page_size:
+                return out
+            offset += page_size
+
+    async def get_or_empty(self, table: str, jwt: str, **params) -> list[dict]:
+        """Like get(), but [] when the table is unavailable.
+
+        Tables created by migration 0001 (audit_logs, cameras, …) do not
+        exist on a pre-migration database; PostgREST then fails the whole
+        request and the endpoint surfaces as 502. Callers that can render
+        honestly without the table (overview counts, recent activity) use
+        this so one missing table cannot take the whole page down. A
+        genuinely unreachable database still fails earlier, on the
+        caller's mandatory queries, so this never masks an outage.
+        """
+        try:
+            return await self.get(table, jwt, **params)
+        except ProviderUnavailable:
+            log.warning("admin: table %s unavailable — migration "
+                        "drizzle/migrations/0001_admin.sql not applied yet? "
+                        "Treating it as empty.", table)
+            return []
+
     async def audit(self, caller: Caller, action: str, target_type: str, target_id: str | None,
                     reason: str | None = None, metadata: dict | None = None) -> None:
-        await self.req("POST", "/rest/v1/audit_logs", caller.jwt, json={
-            "actor_id": caller.user_id, "action": action, "target_type": target_type,
-            "target_id": target_id, "reason": reason, "metadata": metadata or {},
-        })
+        # Best-effort: the audit_logs table is created by migration 0001.
+        # On a pre-migration database the insert can only fail — and it
+        # must not turn an already-completed mutation into a misleading
+        # 502. Once the table exists this writes exactly as before;
+        # money-moving functions audit inside their own SQL transaction.
+        try:
+            await self.req("POST", "/rest/v1/audit_logs", caller.jwt, json={
+                "actor_id": caller.user_id, "action": action, "target_type": target_type,
+                "target_id": target_id, "reason": reason, "metadata": metadata or {},
+            })
+        except ProviderUnavailable:
+            log.warning("admin: audit_logs unavailable (0001 migration not "
+                        "applied yet?) — %s on %s %s was not recorded.",
+                        action, target_type, target_id)
 
 
 # --------------------------------------------------------------------- models
@@ -197,6 +245,14 @@ def _uuid(value: str) -> str:
     return value
 
 
+def _is_schema_error(exc: ProviderUnavailable) -> bool:
+    """True when PostgREST answered 400 — e.g. an unknown column on a
+    pre-0001 database. Only then is a legacy-column retry safe: a network
+    failure (no HTTP status in the message) must not be retried blindly,
+    as the original write may already have landed."""
+    return "HTTP 400" in exc.message
+
+
 def build_admin_router(settings: Settings, authenticator: Authenticator,
                        transport: httpx.AsyncBaseTransport | None = None,
                        health_transport: httpx.AsyncBaseTransport | None = None) -> APIRouter:
@@ -213,15 +269,40 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
     @router.get("/overview")
     async def overview(authorization: str | None = Header(default=None)) -> dict:
         c = await admin(authorization)
-        profiles = await store.get("profiles", c.jwt, select="id,status,created_at", limit="5000")
-        facilities = await store.get("facilities", c.jwt,
-                                     select="id,total_capacity,authorized_capacity,available,active", limit="1000")
+        # Pre-0001 databases lack profiles.status and the facilities
+        # total/authorized/active columns (PostgREST 42703 → ProviderUnavailable).
+        # Retry with the legacy column set instead of failing the whole page
+        # with 502 — same approach as Inventory's legacy fallback. If the
+        # database is genuinely unreachable the retry fails too and the
+        # 502 still surfaces.
+        try:
+            profiles = await store.get("profiles", c.jwt, select="id,status,created_at", limit="5000")
+        except ProviderUnavailable:
+            log.warning("admin overview: profiles.status missing — run "
+                        "drizzle/migrations/0001_admin.sql; using legacy columns.")
+            profiles = await store.get("profiles", c.jwt, select="id,created_at", limit="5000")
+        try:
+            facilities = await store.get("facilities", c.jwt,
+                                         select="id,total_capacity,authorized_capacity,available,active", limit="1000")
+        except ProviderUnavailable:
+            log.warning("admin overview: facilities 0001 columns missing — run "
+                        "drizzle/migrations/0001_admin.sql; using legacy columns.")
+            facilities = await store.get("facilities", c.jwt,
+                                         select="id,capacity,available", limit="1000")
+            for f in facilities:
+                # Legacy schema: `capacity` is both total and authorized,
+                # and every facility counts as active (pre-0001 semantics).
+                f["total_capacity"] = f.get("capacity")
+                f["authorized_capacity"] = f.get("capacity")
+                f["active"] = True
         bookings = await store.get("bookings", c.jwt, select="id,status,total_cents,refunded_cents,created_at",
                                    order="created_at.desc", limit="2000")
         roles = await store.get("user_roles", c.jwt, select="user_id,role", limit="5000")
-        cameras = await store.get("cameras", c.jwt, select="id,status", limit="1000")
-        audit = await store.get("audit_logs", c.jwt, select="id,actor_id,action,target_type,created_at",
-                                order="created_at.desc", limit="8")
+        # Cameras / audit log are created by 0001: empty pre-migration, and
+        # the overview can say so with zeros rather than a 502.
+        cameras = await store.get_or_empty("cameras", c.jwt, select="id,status", limit="1000")
+        audit = await store.get_or_empty("audit_logs", c.jwt, select="id,actor_id,action,target_type,created_at",
+                                         order="created_at.desc", limit="8")
         by_status: dict[str, int] = {}
         for b in bookings:
             by_status[b["status"]] = by_status.get(b["status"], 0) + 1
@@ -266,10 +347,25 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
                     limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                     authorization: str | None = Header(default=None)) -> dict:
         c = await admin(authorization)
-        profiles = await store.get("profiles", c.jwt,
-                                   select="id,display_name,phone,vehicle_plate,vehicle_model,status,created_at",
-                                   order="created_at.desc", limit="5000")
-        roles = await store.get("user_roles", c.jwt, select="user_id,role", limit="5000")
+        # profiles.status is added by migration 0001; on a pre-migration
+        # database PostgREST rejects the select (42703) and the user list
+        # 502s. Retry without it and treat everyone as active — suspension
+        # cannot exist before the column does (same fallback as /overview).
+        # get_all pages through PostgREST so every user is returned, not
+        # just the first (single-response-capped) page.
+        try:
+            profiles = await store.get_all("profiles", c.jwt,
+                                           select="id,display_name,phone,vehicle_plate,vehicle_model,status,created_at",
+                                           order="created_at.desc")
+        except ProviderUnavailable:
+            log.warning("admin users: profiles.status missing — run "
+                        "drizzle/migrations/0001_admin.sql; using legacy columns.")
+            profiles = await store.get_all("profiles", c.jwt,
+                                           select="id,display_name,phone,vehicle_plate,vehicle_model,created_at",
+                                           order="created_at.desc")
+            for p in profiles:
+                p.setdefault("status", "active")
+        roles = await store.get_all("user_roles", c.jwt, select="user_id,role")
         role_map: dict[str, list[str]] = {}
         for r in roles:
             role_map.setdefault(r["user_id"], []).append(r["role"])
@@ -293,6 +389,7 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         rows = await store.get("profiles", c.jwt, select="*", id=f"eq.{uid}", limit="1")
         if not rows:
             raise ValidationFailed("User not found.")
+        rows[0].setdefault("status", "active")  # column added by migration 0001
         roles = await store.get("user_roles", c.jwt, select="role", user_id=f"eq.{uid}")
         bookings = await store.get("bookings", c.jwt, select="*", user_id=f"eq.{uid}",
                                    order="created_at.desc", limit="50")
@@ -364,7 +461,19 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         payload = body.model_dump()
         payload["capacity"] = body.authorized_capacity  # legacy column stays in sync with authorized
         payload["image_key"] = "garage"
-        rows = await store.req("POST", "/rest/v1/facilities", c.jwt, json=payload, prefer="return=representation")
+        try:
+            rows = await store.req("POST", "/rest/v1/facilities", c.jwt, json=payload, prefer="return=representation")
+        except ProviderUnavailable as exc:
+            if not _is_schema_error(exc):
+                raise
+            # Pre-0001 database: the total/authorized/active columns do not
+            # exist yet. Insert with the legacy column set (`capacity`
+            # already carries authorized) so parking creation keeps working.
+            log.warning("admin: facilities 0001 columns missing — run "
+                        "drizzle/migrations/0001_admin.sql; creating with legacy columns.")
+            legacy = {k: v for k, v in payload.items()
+                      if k not in {"total_capacity", "authorized_capacity", "active"}}
+            rows = await store.req("POST", "/rest/v1/facilities", c.jwt, json=legacy, prefer="return=representation")
         row = rows[0] if isinstance(rows, list) and rows else {}
         await store.audit(c, "facility.create", "facility", row.get("id"), None, {"name": body.name})
         return {"facility": row}
@@ -378,6 +487,12 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
         if not rows:
             raise ValidationFailed("Facility not found.")
         cur = rows[0]
+        # Pre-0001 rows have no total/authorized columns: `capacity` stands
+        # in for both so the merged-capacity checks below never KeyError.
+        if cur.get("authorized_capacity") is None:
+            cur["authorized_capacity"] = cur.get("capacity") or 0
+        if cur.get("total_capacity") is None:
+            cur["total_capacity"] = cur.get("capacity") or cur["authorized_capacity"]
         patch = {k: v for k, v in body.model_dump().items() if v is not None and k != "reason"}
         merged = {**cur, **patch}
         # Active-reservation protection runs FIRST: shrinking authorized
@@ -392,10 +507,41 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
                 raise ValidationFailed("Authorized capacity cannot be below active reservations.")
         _validate_capacities(int(merged["total_capacity"]), int(merged["authorized_capacity"]), int(merged["available"]))
         patch["capacity"] = int(merged["authorized_capacity"])
-        await store.req("PATCH", "/rest/v1/facilities", c.jwt, params={"id": f"eq.{fid}"},
-                        json=patch, prefer="return=minimal")
+        try:
+            await store.req("PATCH", "/rest/v1/facilities", c.jwt, params={"id": f"eq.{fid}"},
+                            json=patch, prefer="return=minimal")
+        except ProviderUnavailable as exc:
+            if not _is_schema_error(exc):
+                raise
+            # Pre-0001 database: drop the 0001-only columns and retry with
+            # the legacy set (`capacity` already carries authorized).
+            legacy = {k: v for k, v in patch.items()
+                      if k not in {"total_capacity", "authorized_capacity", "active"}}
+            await store.req("PATCH", "/rest/v1/facilities", c.jwt, params={"id": f"eq.{fid}"},
+                            json=legacy, prefer="return=minimal")
         await store.audit(c, "facility.update", "facility", fid, body.reason, {"fields": sorted(patch.keys())})
         return {"facility_id": fid, "updated": sorted(patch.keys())}
+
+    @router.delete("/facilities/{facility_id}")
+    async def delete_facility(facility_id: str, body: ReasonBody,
+                              authorization: str | None = Header(default=None)) -> dict:
+        c = await admin(authorization)
+        fid = _uuid(facility_id)
+        rows = await store.get("facilities", c.jwt, select="id,name", id=f"eq.{fid}", limit="1")
+        if not rows:
+            raise ValidationFailed("Facility not found.")
+        # Hard-deleting a parking with bookings would destroy booking /
+        # refund history (and violate its foreign keys). Refuse and point
+        # at deactivation, which hides it from drivers but keeps records.
+        bookings = await store.get("bookings", c.jwt, select="id", facility_id=f"eq.{fid}", limit="1")
+        if bookings:
+            raise ValidationFailed(
+                "This parking has bookings and cannot be deleted. Deactivate it instead.")
+        await store.req("DELETE", "/rest/v1/facilities", c.jwt,
+                        params={"id": f"eq.{fid}"}, prefer="return=minimal")
+        await store.audit(c, "facility.delete", "facility", fid, body.reason,
+                          {"name": rows[0].get("name")})
+        return {"facility_id": fid, "deleted": True}
 
     # -------------------------------------------------------------- bookings
     @router.get("/bookings")
@@ -431,13 +577,19 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
     @router.get("/pricing")
     async def pricing(authorization: str | None = Header(default=None)) -> dict:
         c = await admin(authorization)
-        rows = await store.get("facilities", c.jwt,
-                               select="id,name,city,price_per_hour_cents,available,authorized_capacity,active",
-                               order="name.asc", limit="1000")
-        settings_rows = await store.get("app_settings", c.jwt, select="key,value", limit="100")
+        # select="*" works on both schemas (full row also feeds the CRUD
+        # edit form); app_settings / audit_logs are 0001 tables, so they
+        # degrade to defaults / empty instead of 502-ing the whole page.
+        rows = await store.get("facilities", c.jwt, select="*", order="name.asc", limit="1000")
+        for f in rows:
+            if f.get("authorized_capacity") is None:
+                f["authorized_capacity"] = f.get("capacity")
+            if f.get("total_capacity") is None:
+                f["total_capacity"] = f.get("capacity")
+        settings_rows = await store.get_or_empty("app_settings", c.jwt, select="key,value", limit="100")
         cfg = {r["key"]: r["value"] for r in settings_rows}
-        history = await store.get("audit_logs", c.jwt, select="*", action="eq.pricing.update",
-                                  order="created_at.desc", limit="20")
+        history = await store.get_or_empty("audit_logs", c.jwt, select="*", action="eq.pricing.update",
+                                           order="created_at.desc", limit="20")
         return {
             "facilities": rows,
             "pricing_min_cents": cfg.get("pricing_min_cents", 100),
@@ -451,7 +603,7 @@ def build_admin_router(settings: Settings, authenticator: Authenticator,
                            authorization: str | None = Header(default=None)) -> dict:
         c = await admin(authorization)
         fid = _uuid(facility_id)
-        cfg_rows = await store.get("app_settings", c.jwt, select="key,value", limit="100")
+        cfg_rows = await store.get_or_empty("app_settings", c.jwt, select="key,value", limit="100")
         cfg = {r["key"]: r["value"] for r in cfg_rows}
         lo, hi = int(cfg.get("pricing_min_cents", 100)), int(cfg.get("pricing_max_cents", 100_000))
         if not (lo <= body.price_per_hour_cents <= hi):

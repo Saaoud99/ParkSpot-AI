@@ -103,11 +103,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    // suppressHydrationWarning on <html>/<body> ONLY: browser extensions
+    // (e.g. ColorZilla's `cz-shortcut-listen`, password managers) inject
+    // attributes into these elements before React hydrates, which otherwise
+    // fails hydration with an attribute-mismatch warning that React won't
+    // patch up. This does not suppress warnings for app-rendered children.
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
-      <body>
+      <body suppressHydrationWarning>
         {children}
         <Scripts />
       </body>

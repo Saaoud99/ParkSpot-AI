@@ -235,6 +235,13 @@ const en = {
   statusDegraded: "Degraded",
   moduleActive: "Active",
   moduleInactive: "Inactive",
+  pricePerHour: "Price/hr",
+  addParking: "Add parking",
+  editParking: "Edit parking",
+  deleteParking: "Delete parking",
+  cityLbl: "City",
+  addressLbl: "Address",
+  activeLbl: "Active",
 };
 type Dict = typeof en;
 const ar: Dict = {
@@ -468,6 +475,13 @@ const ar: Dict = {
   statusDegraded: "متدهور",
   moduleActive: "نشط",
   moduleInactive: "غير نشط",
+  pricePerHour: "السعر/ساعة",
+  addParking: "إضافة موقف",
+  editParking: "تعديل الموقف",
+  deleteParking: "حذف الموقف",
+  cityLbl: "المدينة",
+  addressLbl: "العنوان",
+  activeLbl: "مفعّل",
 };
 
 type Lang = "en" | "ar";

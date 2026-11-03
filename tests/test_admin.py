@@ -98,6 +98,9 @@ class FakeDB:
         self.app_settings: list[dict] = []
         self.audit_logs: list[dict] = []
         self.rpc_calls: list[tuple[str, dict]] = []
+        # Simulate a database where drizzle/migrations/0001_admin.sql has
+        # not been applied yet (see test_overview_survives_pre_0001_schema).
+        self.legacy_schema = False
 
     # ------------------------------------------------------------- helpers
     def _filter(self, rows: list[dict], params) -> list[dict]:
@@ -120,13 +123,30 @@ class FakeDB:
         if len(parts) != 3 or parts[:2] != ["rest", "v1"]:
             return httpx.Response(404, json={"message": "not found"})
         table = parts[2]
+        if self.legacy_schema and table in {"audit_logs", "cameras", "camera_events",
+                                            "incidents", "app_settings"}:
+            return httpx.Response(404, json={"message": f"table {table} missing"})
         rows = getattr(self, table, None)
         if rows is None:
             return httpx.Response(404, json={"message": f"table {table} missing"})
         if request.method == "GET":
+            if self.legacy_schema:
+                # Pre-0001 PostgREST behaviour: tables created by 0001 do
+                # not exist, and neither do its added columns.
+                if table in {"audit_logs", "cameras", "camera_events",
+                             "incidents", "app_settings"}:
+                    return httpx.Response(404, json={"message": f"table {table} missing"})
+                select = params.get("select", "")
+                if (table == "profiles" and "status" in select) or (
+                        table == "facilities" and "total_capacity" in select):
+                    return httpx.Response(400, json={"code": "42703",
+                                                     "message": "column does not exist"})
             out = self._filter(rows, params)
+            start = int(params.get("offset") or 0)
             if params.get("limit"):
-                out = out[: int(params["limit"])]
+                out = out[start : start + int(params["limit"])]
+            elif start:
+                out = out[start:]
             return httpx.Response(200, json=out)
         if request.method == "POST":
             if table == "app_settings":
@@ -233,6 +253,28 @@ def test_admin_overview(env):
     assert data["revenue_is_demo"] is True
 
 
+def test_overview_survives_pre_0001_schema(env):
+    """Regression: before 0001_admin.sql is applied, PostgREST rejects the
+    new profiles/facilities columns (42703) and the new audit/cameras
+    tables do not exist. /overview must degrade to the legacy column set
+    (200) instead of failing the whole page with 502."""
+    client, db = env
+    db.legacy_schema = True
+    r = client.get("/api/v1/admin/overview", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["users_total"] == 2
+    assert data["users_suspended"] == 0
+    # Legacy normalization: `capacity` (50) stands in for total + authorized.
+    assert data["spaces_total_capacity"] == 50
+    assert data["spaces_authorized"] == 50
+    assert data["spaces_available"] == 20
+    assert data["revenue_cents"] == 3000
+    # Tables created by 0001 report as empty, not as a gateway error.
+    assert data["cameras_total"] == 0
+    assert data["recent_audit"] == []
+
+
 # ------------------------------------------------------------------- users
 
 def test_users_list_embeds_roles(env):
@@ -242,6 +284,49 @@ def test_users_list_embeds_roles(env):
     by_id = {u["id"]: u for u in r.json()["users"]}
     assert by_id[DRIVER_ID]["roles"] == ["user"]
     assert by_id[ADMIN_ID]["roles"] == ["admin"]
+
+
+def test_get_all_pages_through_postgrest_cap():
+    """A single PostgREST response is capped, so get_all must page with
+    limit/offset until a short page arrives instead of truncating."""
+    import asyncio
+
+    from app.meta.admin import AdminStore
+
+    db = FakeDB()
+    db.profiles.append(
+        {"id": "44444444-4444-4444-4444-444444444444", "display_name": "Third",
+         "phone": None, "vehicle_plate": None, "vehicle_model": None,
+         "status": "active", "created_at": NOW},
+    )
+    store = AdminStore(
+        Settings(supabase_url="https://fake.supabase.co",
+                 supabase_publishable_key="publishable-test"),
+        httpx.MockTransport(db.handle),
+    )
+    rows = asyncio.run(store.get_all("profiles", "admin-token", page_size=2, select="id"))
+    assert len(rows) == 3
+    assert len({r["id"] for r in rows}) == 3  # no page repeated
+
+
+def test_users_list_survives_pre_0001_schema(env):
+    """Regression: profiles.status only exists after 0001_admin.sql, so
+    GET /users must fall back to the legacy column set (200, everyone
+    active) instead of 502-ing the whole user list."""
+    client, db = env
+    db.legacy_schema = True
+    r = client.get("/api/v1/admin/users", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total"] == 2
+    by_id = {u["id"]: u for u in data["users"]}
+    assert by_id[DRIVER_ID]["roles"] == ["user"]
+    assert by_id[ADMIN_ID]["status"] == "active"
+    # Search and the status filter still work on the legacy shape.
+    r = client.get("/api/v1/admin/users?search=Driver", headers=ADMIN)
+    assert [u["id"] for u in r.json()["users"]] == [DRIVER_ID]
+    r = client.get("/api/v1/admin/users?status=suspended", headers=ADMIN)
+    assert r.json()["total"] == 0
 
 
 def test_user_detail_unknown_422(env):
@@ -399,6 +484,51 @@ def test_price_update_writes_audit(env):
     assert db.facilities[0]["price_per_hour_cents"] == 2000
     audit = [a for a in db.audit_logs if a["action"] == "pricing.update"]
     assert audit and audit[0]["metadata"]["price_per_hour_cents"] == 2000
+
+
+def test_pricing_and_price_update_survive_pre_0001_schema(env):
+    """Pricing reads app_settings/audit_logs (0001 tables) and writes an
+    audit row: pre-migration it must serve defaults and still save the
+    price instead of failing the whole page with 502."""
+    client, db = env
+    db.legacy_schema = True
+    r = client.get("/api/v1/admin/pricing", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["pricing_min_cents"] == 100 and data["pricing_max_cents"] == 100_000
+    assert data["history"] == []
+    assert data["facilities"][0]["price_per_hour_cents"] == 1500
+    r = client.patch(f"/api/v1/admin/facilities/{FACILITY_ID}/price",
+                     headers=ADMIN,
+                     json={"price_per_hour_cents": 2000, "reason": "Peak season"})
+    assert r.status_code == 200, r.text
+    assert db.facilities[0]["price_per_hour_cents"] == 2000
+
+
+def test_delete_facility_with_bookings_blocked(env):
+    client, db = env
+    r = client.request("DELETE", f"/api/v1/admin/facilities/{FACILITY_ID}",
+                       headers=ADMIN, json={"reason": "Duplicate entry"})
+    assert r.status_code == 422
+    assert "bookings" in r.json()["error"]["message"]
+    assert len(db.facilities) == 1
+
+
+def test_delete_facility_without_bookings_ok_and_audited(env):
+    client, db = env
+    db.bookings.clear()
+    r = client.request("DELETE", f"/api/v1/admin/facilities/{FACILITY_ID}",
+                       headers=ADMIN, json={"reason": "Duplicate entry"})
+    assert r.status_code == 200, r.text
+    assert db.facilities == []
+    assert any(a["action"] == "facility.delete" for a in db.audit_logs)
+
+
+def test_delete_facility_requires_admin(env):
+    client, _ = env
+    r = client.request("DELETE", f"/api/v1/admin/facilities/{FACILITY_ID}",
+                       headers=DRIVER, json={"reason": "Duplicate entry"})
+    assert r.status_code == 403
 
 
 # ----------------------------------------------------------------- bookings
