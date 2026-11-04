@@ -33,3 +33,8 @@ dist-ssr
 
 .env
 .venv
+
+
+__pycache__/
+
+*.pyc
